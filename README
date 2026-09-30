@@ -19,21 +19,26 @@ tools/                  ADFSlib.py (github.com/dcf21/adfslib, vendored) reads
                          (galactic dan's old-map extractor) does NOT work on
                          this disc - wrong map format, kept only for
                          reference. extract.py rebuilds extracted/ from the
-                         .adf. arm2.py is galactic dan's ARM2 emulator,
-                         carried over but not yet wired up here.
+                         .adf. arm2.py is galactic dan's ARM2 emulator (used
+                         both for the notes above and, now, for real work -
+                         see unpack_lemboot.py below).
 
-extracted/              !LEMMINGS/ application tree:
+extracted/              !LEMMINGS/ application tree, as stored on disc:
                            !Run, !RunCold      Obey files (see below)
                            !Sprites, Boot      icon sprites / boot options
                            LemBoot             4.5K loader, RISC OS absolute
-                                               load &8000 (confirmed: it
-                                               disassembles clean with no
-                                               garbage from that base). Sets
-                                               up an
-                                               IRQ vector, an LZ-style
-                                               unpacker (0x84a4-0x8620), and
-                                               (not yet located) however it
-                                               gets LemProg into memory.
+                                               load &8000. First &2000 bytes
+                                               of itself get copied to
+                                               &40000 (loop at &8010-&802c)
+                                               and it continues running from
+                                               there - which is what makes it
+                                               safe to then OS_File-load
+                                               LemProg *at* &8000, clobbering
+                                               the vacated low copy of
+                                               itself. Also loads/unpacks
+                                               Krisalis, PSYGNO and DMALOGO
+                                               the same way (not wired up
+                                               yet, see below).
                            MemMod              relocatable module, RMLoaded
                                                by !Run before anything else
                                                ("RMensure TequeMemory 0
@@ -44,19 +49,48 @@ extracted/              !LEMMINGS/ application tree:
                                                after the game exits.
                            Lemmings/           DmaLogo (intro?), Fred (4
                                                bytes - a flag?), Krisalis
-                                               (splash?), LemProg (68K -
-                                               main game engine), OddTable,
-                                               Psygno (sound engine?),
-                                               SampdatP, LemGrafP, plus:
+                                               (splash?), LemProg (68772
+                                               bytes on disc, compressed -
+                                               see extracted_decompressed/),
+                                               OddTable, Psygno (sound
+                                               engine?), SampdatP, LemGrafP,
+                                               plus:
                              LemGrafix/        ArcGrn1-5P, ArcObj1-5P,
                                                Arcpan1p, SPECIAL0-3 - sprite/
                                                graphics data. The "P" suffix
                                                plus LemBoot's unpacker
                                                strongly suggests these are
-                                               compressed.
+                                               compressed too (not confirmed
+                                               yet - LemBoot only references
+                                               Krisalis/PSYGNO/DMALOGO/
+                                               LemProg by name, so either
+                                               these are unpacked by a
+                                               different piece of code, by
+                                               LemProg itself at runtime, or
+                                               under a name we haven't
+                                               matched to a file yet).
                              LemLevels/        LEMMUS0/1, LEVEL000-024,
                                                LEVELDAT, MUSINFO - level
                                                data, one file per level.
+
+extracted_decompressed/ Decompressed game files, built by tools/unpack_*.py.
+                           LemProg.bin         147264 bytes, load &8000 -
+                                               the REAL main engine, in
+                                               plain ARM2 code (confirmed by
+                                               disassembling start/middle/
+                                               end - all coherent, no
+                                               garbage). 2.14x the on-disc
+                                               size. This is what
+                                               ghidra/run_ghidra_lemprog.sh
+                                               analyses, and it's a normal
+                                               ARM2 binary - despite the
+                                               name "LemProg" sounding like
+                                               it could hide an embedded
+                                               68000 emulator (this being a
+                                               port from the Amiga/ST 68k
+                                               original), it doesn't: this
+                                               is native ARM code, written
+                                               specifically for this port.
 
 ghidra/                  Carried over from galactic dan and confirmed
                           working on real code:
@@ -65,43 +99,90 @@ ghidra/                  Carried over from galactic dan and confirmed
                             export_ghidra.py  spider -> json (unmodified)
                             gen_asm.py        json -> relocatable GNU as
                                                (unmodified, not yet run here)
-                            run_ghidra_lemboot.sh
-                                              imports LemBoot into Ghidra at
-                                              &8000, applies the spider's
-                                              classification, decompiles.
-                                              `GHIDRA=/path ./run_ghidra_lemboot.sh`
+                            run_ghidra_lemboot.sh / run_ghidra_lemprog.sh
+                                              import LemBoot / LemProg.bin
+                                              into Ghidra at &8000, apply the
+                                              spider's classification,
+                                              decompile.
+                                              `GHIDRA=/path ./run_ghidra_lemprog.sh`
                                               (defaults to the same
                                               ghidra_12.1.3_PUBLIC install
-                                              galactic dan uses).
-                          Ran clean: 23 functions (22 speculative), 2
+                                              galactic dan uses). Output
+                                              goes to out/lemboot/ and
+                                              out/lemprog/ (galdan.c/
+                                              functions.tsv - filenames are
+                                              hardcoded by
+                                              RiscOSPostAnalysis.java).
+                          LemBoot: 23 functions (22 speculative), 2
                           self-modified sites, spider/ghidra code bytes
                           matched exactly (1404/1404).
+                          LemProg.bin: 205 functions decompiled, 18
+                          self-modified sites, spider/ghidra agree on
+                          17244/17780 code bytes (284 bytes ghidra-only,
+                          i.e. a handful of jump tables spider didn't
+                          resolve speculatively - normal for a first pass,
+                          comparable to where galactic dan started).
 
 asm/, recomp/            Empty so far - this is where galactic dan's
                           reassembler and SDL3 static recompiler live; not
                           started here.
 
+How LemProg gets decompressed
+------------------------------
+tools/unpack_lemboot.py doesn't reimplement LemBoot's LZ-style codec by
+hand - it *emulates LemBoot itself* (via arm2.py) far enough to load and
+unpack the real file, which sidesteps every chance of a hand-transcription
+bug in a bit-level compression algorithm. Concretely, for LemProg:
+  - LemBoot's relocated copy (see above) contains a small function at file
+    offset &8aac that: sets r8 = pointer to the string "LemProg", r9 (APCS
+    "sb") = &8000 (target load address), then calls a shared loader.
+  - The loader issues `OS_File 255` ("load object at the given address")
+    for "<Lem$Dir>.Lemmings.LemProg" - our emulated SWI handler resolves
+    that RISC OS path against extracted/ (case-insensitively, stripping the
+    ",load-exec" suffix extract.py adds) and copies the real file's bytes
+    into emulated memory at &8000.
+  - It then calls the unpacker at file offset &8468 (the same LZ-style
+    routine visible from &84a4-&8620 in a disassembly - self-modifying,
+    reads the compressed stream backwards from high to low addresses).
+  - We run the emulator until it returns, tracking every memory write (via
+    arm2.py's write_hook) to discover the true decompressed extent, then
+    save that span as the output file - no assumptions about the codec's
+    internals required, only about *which registers/strings set up the
+    call*, which we got from reading the disassembly once.
+This same approach should work unchanged for Krisalis/PSYGNO/DMALOGO (and
+possibly the LemGrafix/LemLevels files) once their call sites are found -
+see step 2 below.
+
 Status / next steps
 --------------------
 1. Extraction: DONE (tools/extract.py, via ADFSlib).
-2. LemBoot: spider+Ghidra pipeline runs clean; still need to actually read
-   through the decompile (ghidra/out/galdan.c - filename is hardcoded by
-   RiscOSPostAnalysis.java, rename later) to find where/how it gets LemProg
-   into memory and what address it lands at. No "LemProg" string is embedded
-   in LemBoot, so the load is probably parameterised from !Run or from a
-   leafname LemBoot derives itself - needs a proper look, not a skim.
-3. Once LemProg's load address is known: point export_ghidra.py /
-   run_ghidra.sh-style script at it (68K, much bigger than LemBoot - this is
-   the real engine, equivalent to galactic dan's !RunImage).
+2. LemBoot: DONE - spider+Ghidra pipeline runs clean, and we've read enough
+   of the decompile to fully understand its relocate-then-chainload
+   behaviour and how it invokes the unpacker for LemProg (see above).
+   Krisalis/PSYGNO/DMALOGO are loaded by near-identical code around
+   &8c00-&8d60 (same string-table-after-the-function pattern as LemProg's
+   &8ae8) but with different call-site offsets/load addresses - worth
+   pulling those three call sites out (same technique as unpack_lemboot.py)
+   since they're small and will validate the approach further before
+   tackling LemGrafix/LemLevels.
+3. LemProg: DONE for this stage - decompressed (extracted_decompressed/
+   LemProg.bin, 147264 bytes) and imported into Ghidra (205 functions,
+   see above). This is the real engine, load &8000, entry point at file
+   offset &192ac (i.e. runtime address &192ac). It is NOT 68000 code (it's
+   a native ARM2 rewrite, not an emulated Amiga/ST port) - confirmed by
+   disassembling the start, a middle section, and the very end of the
+   decompressed buffer, all clean ARM2 with no garbage or 68k-style
+   patterns.
 4. MemMod and musmod2 are RISC OS *modules*, not absolute-loaded code - they
    have a different header format (module header with offsets to title,
    help string, SWI table, entry points) and get relocated at RMLoad time.
    spider.py/export_ghidra.py assume absolute load; will need adapting for
    the module header and for being entered via multiple SWI/vector entry
    points rather than one.
-5. LemGrafix/*P and LemLevels/LEMMUS0/1 are very likely compressed by the
-   unpacker in LemBoot (0x84a4-0x8620) - worth understanding that routine
-   properly early, since every asset depends on it.
+5. LemGrafix/*P and LemLevels/LEMMUS0/1 may be compressed by the same
+   unpacker - not yet confirmed which code path (if any) loads them; worth
+   checking LemProg's own decompile once it's been read properly, since the
+   loader isn't in LemBoot for these.
 6. Only after LemProg (+ MemMod + musmod2) are disassembled and reassemble
    byte-identically (galactic dan's asm/ milestone) does static
    recompilation to C (recomp/, galactic dan's gen_c.py) become relevant.
