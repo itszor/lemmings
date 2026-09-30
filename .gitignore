@@ -18,6 +18,14 @@ asm/*/LemBoot,*
 asm/*.png
 asm/*.log
 
-# Recompilation products, once that stage exists
+# Recompilation: generated C (python3 gen_c.py), objects, binary, run outputs
 recomp/gen/
 recomp/*.o
+recomp/lemmings
+recomp/*.events
+recomp/*.vdu
+recomp/*.screen
+recomp/*.regs
+recomp/*.trace
+recomp/*.log
+recomp/screenshot-*.bmp
