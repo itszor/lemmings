@@ -292,6 +292,21 @@ class Spider:
                     if w & (1 << 15) and always:
                         return
                 if (w >> 21) & 1: regs.pop((w >> 16) & 15, None)
+                # "stmdb sp!, {pc}" alone (push-pc-as-fake-return-address) is
+                # this codebase's idiom for a "bl" whose target is out of B's
+                # +-32M range: it's always immediately followed by one inert
+                # NV-conditioned filler word (nothing on ARM2 executes on NV),
+                # then the real "b target". Skip the filler rather than
+                # treating it as an invalid instruction, or the whole trace
+                # aborts here and everything downstream is lost. Require the
+                # full 3-word shape (not just push-pc + NV) so we don't walk
+                # into ordinary data that happens to start the same way.
+                if not ((w >> 20) & 1) and (w & 0xFFFF) == 0x8000:
+                    fw = img.word(nxt)
+                    bw = img.word(nxt + 4)
+                    if fw >> 28 == 0xF and (bw >> 25) & 7 == 5:
+                        self.code[nxt] = fn
+                        nxt += 4
                 a = nxt; prev.append(w); continue
 
             # MUL/MLA/SWP/coprocessor

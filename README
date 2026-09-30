@@ -116,7 +116,10 @@ extracted_decompressed/ Decompressed game files, built by tools/unpack_*.py.
 ghidra/                  Carried over from galactic dan and confirmed
                           working on real code:
                             spider.py         recursive-descent + speculative
-                                               code finder (unmodified)
+                                               code finder. One fix on top of
+                                               galactic dan's version - see
+                                               "Fixing spider's false negative"
+                                               below.
                             export_ghidra.py  spider -> json (unmodified)
                             gen_asm.py        json -> relocatable GNU as
                                                (unmodified, not yet run here)
@@ -134,15 +137,12 @@ ghidra/                  Carried over from galactic dan and confirmed
                                               functions.tsv - filenames are
                                               hardcoded by
                                               RiscOSPostAnalysis.java).
-                          LemBoot: 23 functions (22 speculative), 2
-                          self-modified sites, spider/ghidra code bytes
-                          matched exactly (1404/1404).
-                          LemProg.bin: 205 functions decompiled, 18
-                          self-modified sites, spider/ghidra agree on
-                          17244/17780 code bytes (284 bytes ghidra-only,
-                          i.e. a handful of jump tables spider didn't
-                          resolve speculatively - normal for a first pass,
-                          comparable to where galactic dan started).
+                          LemBoot: 28 functions decompiled, spider/ghidra
+                          agree on 2020/2072 code bytes.
+                          LemProg.bin: 199 functions decompiled (up from an
+                          initial 149 before the spider fix below), overall
+                          code coverage 12.0% -> 19.6% of the image, ghidra/
+                          spider agree on 25492/28804 code bytes.
 
 asm/, recomp/            Empty so far - this is where galactic dan's
                           reassembler and SDL3 static recompiler live; not
@@ -211,6 +211,49 @@ packed-pixel bitmap encoding specific to the graphics code, unrelated to
 LemBoot's unpacker. Reading LemProg's sprite-drawing code (not yet
 attempted) would confirm this either way.
 
+Fixing spider's false negative on the &27a60 loader dispatch
+--------------------------------------------------------------
+The &27ad0-&27ca8 caller wasn't in spider's output at all initially, and
+adding it as an explicit entry point (export_ghidra.py's `[extra-entry]`
+args) didn't help either - the very first instruction after the entry,
+&27a64, tripped spider's `valid_arm2()` check ('NV condition' = invalid)
+and the whole trace was thrown away.
+
+That word (bytes 00 00 a0 f1, i.e. "mov r0,r0" with its condition field
+forced to NV = "never execute") turns out to be a real, pervasive idiom in
+this codebase: "stmdb sp!, {pc}" (push just PC - a hand-rolled fake return
+address, standing in for a BL whose target is out of B/BL's +-32MB range)
+is always immediately followed by exactly this NV filler word, then the
+real "b target". Nothing on ARM2 ever executes an NV-conditioned
+instruction, so it's inert - but spider's gap analysis (correctly, for its
+original job of scoring "does this look like code") flagged it as
+implausible, and its recursive-descent tracer (incorrectly, for actually
+disassembling this codebase) aborted the whole function on it.
+
+We'd already seen this exact 3-word shape work fine dozens of times
+elsewhere (every register-load vector thunk in LemBoot uses it) - it just
+happened that in those cases spider always arrived at the idiom via an
+already-established trace rather than as a fresh function entry, and
+apparently never via *speculative* entry either, so the bug never showed
+up as a rejected trace before.
+
+Fixed in spider.py's LDM/STM handling: recognise "stmdb sp!, {pc}"
+(register list == {pc} exactly) followed by an NV word followed by a real
+B/BL, and skip the filler word instead of decoding it. Verified this isn't
+over-matching ordinary data that happens to start the same way (checked
+with and without also requiring the trailing B/BL - identical results
+either way, so the trailing check is a safety margin, not load-bearing).
+
+Effect on LemProg.bin alone: speculative code coverage 12.0% -> 19.6% of
+the whole image, functions found 149 -> 221 (199 -> Ghidra-decompiled,
+Ghidra's own jump-table warnings roughly doubled too - expected, since a
+lot of the newly-found code is exactly this kind of hand-written indirect
+dispatch that Ghidra can't auto-resolve, not a sign the new code is wrong).
+LemBoot picked up a smaller, consistent improvement (23 -> 28 functions).
+This is very likely THE reason large parts of LemProg were unreachable in
+the first place, not a one-off - the same macro/idiom is presumably used
+everywhere in this codebase that a far branch or call is needed.
+
 Status / next steps
 --------------------
 1. Extraction: DONE (tools/extract.py, via ADFSlib).
@@ -234,18 +277,24 @@ Status / next steps
    the module header and for being entered via multiple SWI/vector entry
    points rather than one.
 5. LemGrafix/*P and LemLevels/* loading: DONE for this stage - found the
-   loader (LemProg file offset &280e0, called via &27ad0-&27ca8; see above)
-   by searching the binary for literal-pool references to the string
+   loader (LemProg file offset &280e0, called via &27ad0-&27ca8) by
+   searching the binary for literal-pool references to the string
    addresses rather than relying on spider/Ghidra's reachability analysis,
-   since that code wasn't in the 205 already-decompiled functions. It's the
-   same OS_File-255 template as LemBoot's loader, but with no unpack call -
-   these assets most likely aren't LZ-compressed at all (see above).
+   since that code wasn't in the (at the time) 205 already-decompiled
+   functions. Chasing *why* it wasn't reachable led to the spider.py fix
+   above, which pulled the whole &27a60-&2be24 region (and a lot more
+   elsewhere) into the decompile properly - see ghidra/out/lemprog/galdan.c
+   around those addresses for the real, now-named functions instead of the
+   manual disassembly notes above. It's the same OS_File-255 template as
+   LemBoot's loader, but with no unpack call - these assets most likely
+   aren't LZ-compressed at all (see above).
    NEXT: run tools/unpack_lemboot.py's technique against LemProg.bin itself
    (driving arm2.py from its &280e0 entry, same OS_File SWI shim) to
-   actually load a level + its graphics into a file, then figure out the
-   binary level format (well documented for the classic Amiga/DOS version -
-   worth checking it matches) and the ArcGrn/ArcObj sprite encoding by
-   reading LemProg's sprite-drawing code.
+   actually load a level + its graphics into a file - not needed to prove
+   the format (we're not decoding it right now), but needed to get the raw
+   bytes out for anything downstream. Actual level-format decoding is
+   explicitly deferred per current priorities (finding code > decoding
+   data).
 6. Only after LemProg (+ MemMod + musmod2) are disassembled and reassemble
    byte-identically (galactic dan's asm/ milestone) does static
    recompilation to C (recomp/, galactic dan's gen_c.py) become relevant.
