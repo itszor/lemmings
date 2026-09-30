@@ -175,7 +175,7 @@ void vidc_write(uint32_t v)
     unsigned reg = v >> 26;
     uint32_t val = v & 0x3FFFFFF;
     if (reg < 16) vidc_palette[reg] = val;
-    if (vidc_seen[reg] < 8) {
+    if (val != 0 || vidc_seen[reg] < 8) {
         vidc_seen[reg]++;
         FILE *f = fopen("vidc.log", "a");
         if (f) { fprintf(f, "%llu: VIDC reg %u = %#x (raw %#x)\n",

@@ -408,9 +408,35 @@ handler - our emulation just runs so much faster than real ARM2 hardware
 that it spins millions of times between each unlock, which is expected,
 not a bug).
 
-Still not resolved: with the game now idling in its real main loop,
-simulated mouse clicks don't produce any further OS_File loads or visible
-change - it's parked at some screen (splash/logo timer, demo/attract mode,
-or waiting on a different input) that we haven't identified. The palette
-is consequently still black in normal runs (source table still
-unpopulated) pending figuring out what that screen is waiting for.
+UPDATE - found the actual "Start" hotspot, and it works: read the real
+mouse-handling code directly (the only `svc &1c` (OS_Mouse) in the whole
+image, at &2a834) rather than guessing screen positions blind. It scales
+OS_Mouse's X (0-1279) by /4 -> pixel 0-319 (confirms 320 wide), and Y via
+(1024-Y)/4 clamped at 0 (confirms the OS-unit vertical flip). A second
+function at &dea8 gates on scaled Y in [148,187) then dispatches on X
+across six ~50-70px-wide slots; the [22,78) slot falls straight into the
+&27a60 loader chain we fixed earlier in this project. Clicking OS_Mouse
+coordinates (200,364) - i.e. scaled pixel (50,165), inside that slot -
+reliably (reproduced twice) triggers real level/asset loading:
+MusMod2 On/Load/Run calls, then OS_File loads for LemLevels.LEVEL018,
+LemGrafix.ArcObj1P, LemGrafix.ArcGrn1P, LemGrafix.arcpan1p. This is a real, working "start game" input, not a guess anymore:
+`./lemmings --script=3000:click:200:364,3100:release,...` (interactive
+mode only - see below).
+
+Caveat found along the way: --script/--headless don't work together.
+headless's irq_point() path doesn't call rt_service() at all (that's
+where run_script() lives), so --script is silently ignored under
+--headless - inherited from galactic dan, not something we changed. Use
+interactive mode (needs a real or virtual display) for scripted input.
+
+Still black on screen, even past this point: the palette source tables
+(&8428/&83e8) stay all-zero through the whole sequence above (confirmed:
+vidc_palette[] is unconditionally updated every frame by our forced
+call_852c(), independent of the logging cap that made an earlier check
+look like it had "stopped" - it hadn't, the values are just genuinely
+still zero). So loading LemGrafix/LemLevels doesn't by itself populate
+the palette; something else must write the real colours into &8428/&83e8,
+and we haven't found what yet (next step: search for what writes *into*
+that 64-byte range, as opposed to what reads the addresses *of* it, which
+is what we've searched for so far - a plain byte/word scan won't find a
+loop-driven table fill).
