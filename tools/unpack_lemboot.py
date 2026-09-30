@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Decompress a file LemBoot loads+unpacks, by actually emulating LemBoot's
-own loader/unpacker routine (arm2.py) rather than reimplementing its LZ-style
-codec by hand.
+"""Decompress the files LemBoot loads+unpacks, by actually emulating
+LemBoot's own loader/unpacker routine (arm2.py) rather than reimplementing
+its LZ-style codec by hand.
 
 LemBoot (RISC OS absolute, load &8000) copies its first &2000 bytes to
 &40000 and continues running from there (see the loop at &8010-&802c), which
@@ -10,18 +10,28 @@ overwriting the low copy of itself. So all offsets below are given as
 LemBoot-file-relative (i.e. "as disassembled with load address &8000") and
 translated to the relocated &40000 copy at run time.
 
-Known loader call sites within LemBoot (leafname string -> call site that
-sets r8 = leafname pointer, r9 = load address, then falls into the shared
-loader at &8aac):
-    LemProg   @ str &8ae8, call site &8aac, load addr &8000
-(Krisalis/PSYGNO/DMALOGO look structurally identical around &8c00-&8d60 but
-use a different call pattern - not wired up here yet, see README.)
+There are two structurally-similar loader call sites in LemBoot, both of
+which: set r8 = pointer to a leafname string, set r9 (APCS "sb") = target
+load address, then bl a shared "OS_File 255 load, then LZ-unpack" routine.
 
-Usage: unpack_lemboot.py <leafname> <call_site_hex> <str_ptr_hex> <load_addr_hex> <out_file>
-Example (LemProg):
-    unpack_lemboot.py LemProg 8aac 8ae8 8000 lemprog_decompressed.bin
+    LemProg (the main engine): entered directly at &8aac, which sets r9 =
+    &8000 itself (a fixed literal in the code).
+
+    Krisalis / PSYGNO / DMALOGO (splash-screen bitmaps, ~32000 bytes each
+    once unpacked - confirmed by their post-unpack byte distribution: mostly
+    zero with ~100-175 distinct values, i.e. an indexed-colour bitmap, not
+    code): entered at &8af0, which reads r9 from a literal pool slot at
+    &8a20 that real LemBoot presumably fills in dynamically before each of
+    these three calls (we didn't trace that setup - see README). All three
+    empirically decompress cleanly when that slot is pre-seeded to &8000
+    (i.e. same "load low, use briefly, get overwritten by the next asset"
+    pattern as LemProg), so that's what TARGETS below assumes.
+
+Usage: unpack_lemboot.py [leafname ...]   (default: all four known targets)
+Decompressed files are written to extracted_decompressed/<leafname>.bin
 """
 import os
+import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,10 +40,19 @@ import arm2
 HERE = os.path.dirname(os.path.abspath(__file__))
 LEMBOOT = os.path.join(HERE, '..', 'extracted', '!LEMMINGS', 'LemBoot,fffff843-00000000')
 ROOT = os.path.join(HERE, '..', 'extracted', '!LEMMINGS')
+OUT_DIR = os.path.join(HERE, '..', 'extracted_decompressed')
 RELOC = 0x40000
 LOAD_BASE = 0x8000
-RELOC_COPY_LEN = 0x2000  # bytes 0x8010-0x802c copies this many bytes to 0x40000
 STACK_TOP = 0x300000
+SB_SLOT = 0x8a20  # literal pool slot the Krisalis/PSYGNO/DMALOGO loader reads r9 from
+
+# leafname -> (call_site, return_addr, str_ptr, patch_sb_slot)
+TARGETS = {
+    'LemProg':  (0x8aac, 0x8ae4, 0x8ae8, False),
+    'Krisalis': (0x8af0, 0x8b2c, 0x8c38, True),
+    'PSYGNO':   (0x8af0, 0x8b2c, 0x8cd0, True),
+    'DMALOGO':  (0x8af0, 0x8b2c, 0x8d5c, True),
+}
 
 
 def resolve(path):
@@ -62,10 +81,14 @@ def read_cstr(mem, addr):
     return mem[addr:end].decode('latin1')
 
 
-def run(call_site, str_ptr, load_addr):
+def run(call_site, ret_addr, str_ptr, patch_sb_slot):
     lemboot = open(LEMBOOT, 'rb').read()
-    m = arm2.ARM(memsize=0x400000)
+    m = arm2.ARM(memsize=0x4000000)  # must cover the emulator's 26-bit (64M) address mask
     m.mem[RELOC:RELOC + len(lemboot)] = lemboot
+
+    off = lambda a: RELOC + (a - LOAD_BASE)
+    if patch_sb_slot:
+        struct.pack_into('<I', m.mem, off(SB_SLOT), LOAD_BASE)
 
     bounds = [None, None]
     tracking = [False]
@@ -80,7 +103,8 @@ def run(call_site, str_ptr, load_addr):
             bounds[1] = hi
 
     def swi_handler(m, num, pc):
-        real = num & 0x1FFFF
+        x = bool(num & 0x20000)
+        real = num & ~0x20000
         if real == 0x08 and m.r[0] == 0xFF:  # OS_File, reason 255 (Load)
             path = read_cstr(m.mem, m.r[1])
             fpath = resolve(path)
@@ -88,22 +112,22 @@ def run(call_site, str_ptr, load_addr):
             addr = m.r[2]
             m.mem[addr:addr + len(data)] = data
             m.r[0], m.r[3], m.r[4], m.r[5] = 1, addr, len(data), 0
-            m.flags &= ~arm2.V_
             tracking[0] = True
-            print('OS_File load %s -> %s (%d bytes) @ %#x' % (path, fpath, len(data), addr),
+            print('  OS_File load %s -> %s (%d bytes) @ %#x' % (path, fpath, len(data), addr),
                   file=sys.stderr)
         else:
             raise Exception('unhandled SWI %x at pc %x' % (num, pc))
+        if x:
+            m.flags &= ~arm2.V_
 
     m.write_hook = write_hook
     m.swi_handler = swi_handler
 
-    off = lambda a: RELOC + (a - LOAD_BASE)
     m.r[8] = off(str_ptr)
-    m.r[9] = load_addr
+    m.r[9] = LOAD_BASE
     m.r[13] = STACK_TOP
     m.r[15] = off(call_site)
-    ret = off(call_site + 0x38)  # the loader's fixed epilogue offset (ldm sp!,{pc})
+    ret = off(ret_addr)
 
     steps = 0
     while m.r[15] != ret:
@@ -118,10 +142,14 @@ def run(call_site, str_ptr, load_addr):
 
 
 def main():
-    leafname, call_site, str_ptr, load_addr, out_path = sys.argv[1:6]
-    data = run(int(call_site, 16), int(str_ptr, 16), int(load_addr, 16))
-    open(out_path, 'wb').write(data)
-    print('%s: %d bytes -> %s' % (leafname, len(data), out_path))
+    names = sys.argv[1:] or list(TARGETS)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    for name in names:
+        print('%s:' % name, file=sys.stderr)
+        data = run(*TARGETS[name])
+        out_path = os.path.join(OUT_DIR, name + '.bin')
+        open(out_path, 'wb').write(data)
+        print('%s: %d bytes -> %s' % (name, len(data), out_path))
 
 
 if __name__ == '__main__':

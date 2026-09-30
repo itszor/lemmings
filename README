@@ -91,6 +91,21 @@ extracted_decompressed/ Decompressed game files, built by tools/unpack_*.py.
                                                original), it doesn't: this
                                                is native ARM code, written
                                                specifically for this port.
+                           Krisalis.bin        32000 bytes, load &8000 - a
+                           PSYGNO.bin          320x100 8bpp splash bitmap
+                           DMALOGO.bin         (indexed colour, mostly zero/
+                                               background). Rendered and
+                                               visually confirmed (see docs/
+                                               *_preview.png): DMALOGO is the
+                                               DMA Design logo, PSYGNO is the
+                                               Psygnosis logo, Krisalis.bin
+                                               is the Krisalis logo. Each
+                                               image is doubled left/right
+                                               within the 320x100 frame (i.e.
+                                               likely a 160x100 sprite shown
+                                               pixel-doubled, or stored
+                                               doubled for a specific screen
+                                               mode - not confirmed which).
 
 ghidra/                  Carried over from galactic dan and confirmed
                           working on real code:
@@ -149,22 +164,31 @@ bug in a bit-level compression algorithm. Concretely, for LemProg:
     save that span as the output file - no assumptions about the codec's
     internals required, only about *which registers/strings set up the
     call*, which we got from reading the disassembly once.
-This same approach should work unchanged for Krisalis/PSYGNO/DMALOGO (and
-possibly the LemGrafix/LemLevels files) once their call sites are found -
-see step 2 below.
+Krisalis/PSYGNO/DMALOGO use a second, near-identical call site (file offset
+&8af0, shared by all three) that reads r9 from a literal-pool slot at &8a20
+instead of using a fixed constant - real LemBoot presumably fills that slot
+in dynamically before each call (not traced), but all three decompress
+cleanly when we pre-seed it to &8000 ourselves, same as LemProg's target.
+The result for each is a 320x100 8bpp bitmap that renders as the expected
+logo (see docs/*_preview.png) - about as strong a correctness check on the
+whole codec-by-emulation approach as we could ask for.
+
+LemGrafix/LemLevels are NOT loaded by LemBoot at all - grepping strings out
+of the decompressed LemProg.bin turns up "LemGrafix.ArcGrn1P",
+"LemLevels.LEVEL000" etc. around file offset &2be00-&2bf40 (right near the
+end of LemProg's own data), so that loading (and presumably decompression)
+happens from inside LemProg itself, at runtime, per level - a separate,
+bigger investigation into LemProg's own decompile rather than another
+LemBoot call site.
 
 Status / next steps
 --------------------
 1. Extraction: DONE (tools/extract.py, via ADFSlib).
 2. LemBoot: DONE - spider+Ghidra pipeline runs clean, and we've read enough
    of the decompile to fully understand its relocate-then-chainload
-   behaviour and how it invokes the unpacker for LemProg (see above).
-   Krisalis/PSYGNO/DMALOGO are loaded by near-identical code around
-   &8c00-&8d60 (same string-table-after-the-function pattern as LemProg's
-   &8ae8) but with different call-site offsets/load addresses - worth
-   pulling those three call sites out (same technique as unpack_lemboot.py)
-   since they're small and will validate the approach further before
-   tackling LemGrafix/LemLevels.
+   behaviour and how it invokes the unpacker for LemProg, Krisalis, PSYGNO
+   and DMALOGO (see above; all four decompress and, for the three images,
+   visually check out).
 3. LemProg: DONE for this stage - decompressed (extracted_decompressed/
    LemProg.bin, 147264 bytes) and imported into Ghidra (205 functions,
    see above). This is the real engine, load &8000, entry point at file
@@ -179,10 +203,14 @@ Status / next steps
    spider.py/export_ghidra.py assume absolute load; will need adapting for
    the module header and for being entered via multiple SWI/vector entry
    points rather than one.
-5. LemGrafix/*P and LemLevels/LEMMUS0/1 may be compressed by the same
-   unpacker - not yet confirmed which code path (if any) loads them; worth
-   checking LemProg's own decompile once it's been read properly, since the
-   loader isn't in LemBoot for these.
+5. NEXT: LemGrafix/*P and LemLevels/* are loaded from inside LemProg itself
+   at runtime (confirmed by strings in LemProg.bin - see above), not by
+   LemBoot. Finding and understanding that loader means reading LemProg's
+   own Ghidra decompile (ghidra/out/lemprog/galdan.c) around the functions
+   that reference those string table entries near file offset &2be00, then
+   very likely reusing the same emulate-the-real-loader trick (this time
+   driving LemProg.bin's own code in arm2.py rather than LemBoot's) to
+   pull out and decompress a sample level + its graphics.
 6. Only after LemProg (+ MemMod + musmod2) are disassembled and reassemble
    byte-identically (galactic dan's asm/ milestone) does static
    recompilation to C (recomp/, galactic dan's gen_c.py) become relevant.
