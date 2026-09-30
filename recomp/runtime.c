@@ -109,7 +109,28 @@ static void run_script(void)
 }
 #define CS_NS 10000000ull
 
-void dbg_hook(uint32_t a) { (void)a; }
+/* TEMP: PC histogram after a threshold, to see what LemProg is doing once
+ * it stops making OS_File progress (see README) - printed from finish(). */
+#define PCHIST 8192
+static struct { uint32_t a; uint64_t n; } pchist[PCHIST];
+void dbg_hook(uint32_t a)
+{
+    if (icount < 700000) return;
+    unsigned h = (a >> 2) % PCHIST;
+    while (pchist[h].n && pchist[h].a != a) h = (h + 1) % PCHIST;
+    pchist[h].a = a; pchist[h].n++;
+}
+static void dump_pchist(void)
+{
+    for (int pass = 0; pass < 15; pass++) {
+        uint32_t besta = 0; uint64_t bestn = 0; int besti = -1;
+        for (int k = 0; k < PCHIST; k++)
+            if (pchist[k].n > bestn) { bestn = pchist[k].n; besta = pchist[k].a; besti = k; }
+        if (besti < 0) break;
+        fprintf(stderr, "pchist #%d: %08x x%llu\n", pass, besta, (unsigned long long)bestn);
+        pchist[besti].n = 0;
+    }
+}
 
 /* spec_852c (the VIDC palette-load routine) has zero static/traced callers
  * (confirmed both in ghidra/out/lemprog/functions.tsv and by instrumenting
@@ -910,6 +931,7 @@ static void finish(const char *why)
         for (int k = 0; k < ISTAT; k++) if (istat[k].n)
             fprintf(stderr, "interp %08x %s %08x x%llu\n", istat[k].a, istat[k].why ? "smc-form" : "no-entry",
                     istat[k].why, (unsigned long long)istat[k].n);
+    dump_pchist();
     sound_close();
     if (vdu_unhandled) fprintf(stderr, "VDU: %u unhandled codes/characters\n", vdu_unhandled);
     fprintf(stderr, "stopped: %s after %llu instructions (%llu interpreted, %llu SMC stores noted)\n",

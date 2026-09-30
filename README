@@ -375,16 +375,42 @@ frame, right on the per-frame cadence) - but every value is zero. The
 *mechanism* is right; the *source table* (&8428) is still unpopulated at
 the point we're calling it.
 
-Why: recomp.events shows only three OS_File loads happen, ever, in a 5+
-billion instruction run - LemGrafP, then LemLevels.Musinfo, then
-sampdatp - and then nothing. The game loads its general graphics
-parameters and the sound assets, then appears to stop making forward
-progress entirely (no level/LemGrafix loads, matching the loader found
-earlier). Most likely: it's waiting on a response from MusicModule2 (the
-custom &41C40-&41C4B SWI chunk) that our stub (musmod2_swi() in
-runtime.c) doesn't provide - it just logs and returns, which may not
-satisfy whatever polling/callback protocol the game expects before it
-considers sound "ready" and moves on to loading a level. This needs
-musmod2's actual SWI protocol understood (or at least guessed at more
-carefully than blind stubbing) to make further progress - not a palette
-problem anymore, a sound-module protocol problem.
+UPDATE: it wasn't MusicModule2 - musmod2_swi() is never even called (see
+below; retracted). recomp.events showed only three OS_File loads ever
+happening (LemGrafP, LemLevels.Musinfo, sampdatp) because execution was
+genuinely stuck in a busy-wait, not because it was done making progress.
+
+Diagnosed with a PC histogram (dbg_hook()/pchist[] in runtime.c/.h - a
+temporary, cheap-per-instruction hook, still present but harmless): after
+the third file load, the CPU spent effectively all its time spinning on
+`ldr r0,[pc,#-0x120]; ldr r1,[pc,#-0x128]; orrs r0,r0,r1; ...; bne` at
+&8600/&dc28 - a generic "wait while [&84e8]|[&84ec] is nonzero" primitive,
+called from 9+ sites across &d000-&19000. Both addresses get set to &ff by
+two separate "kick" sites (&dc0c, &198f4) and are never cleared anywhere
+in the static image - the clearing must be a side effect of real hardware
+we don't emulate (most likely sound DMA buffer-end, given the proximity to
+sound asset loading, but not confirmed). Musmod2's own module header
+(SWIchunk &41c40, SWI names Mus_On/Off/Songpos/Getpos/Volume/Samplerate/
+Patch/Effect/Effectstatus/Load/Effectcontrol/Run/Sector/Bufferaddress/
+Memvalid/Laidback/Samplestarts, read straight from its SWIdecode table at
+file offset &5e8) turned out to be a dead end for this particular hang:
+LemProg never calls a single one of its SWIs in the runs where this loop
+was hit.
+
+Fix (runtime.h's WR32, clearly marked EXPERIMENTAL): treat &84e8/&84ec as
+write-only "always reads back zero" - i.e. simulate the hardware
+completing whatever it's being asked to do instantly. This unblocked
+forward progress: the game now reaches a real, correctly-vsync-
+synchronised main loop (confirmed: the *next* hottest loop, at &2a598,
+turned out to be a legitimate "wait for next tick" primitive - its counter
+genuinely is incremented every frame by the already-working &2a70c Event_V
+handler - our emulation just runs so much faster than real ARM2 hardware
+that it spins millions of times between each unlock, which is expected,
+not a bug).
+
+Still not resolved: with the game now idling in its real main loop,
+simulated mouse clicks don't produce any further OS_File loads or visible
+change - it's parked at some screen (splash/logo timer, demo/attract mode,
+or waiting on a different input) that we haven't identified. The palette
+is consequently still black in normal runs (source table still
+unpopulated) pending figuring out what that screen is waiting for.
