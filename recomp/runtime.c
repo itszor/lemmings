@@ -113,12 +113,26 @@ static void run_script(void)
  * it stops making OS_File progress (see README) - printed from finish(). */
 #define PCHIST 8192
 static struct { uint32_t a; uint64_t n; } pchist[PCHIST];
+uint32_t g_cur_pc;                      /* TEMP: for watch_write() below */
 void dbg_hook(uint32_t a)
 {
+    g_cur_pc = a;
     if (icount < 700000) return;
     unsigned h = (a >> 2) % PCHIST;
     while (pchist[h].n && pchist[h].a != a) h = (h + 1) % PCHIST;
     pchist[h].a = a; pchist[h].n++;
+}
+/* TEMP: log the first few writes into [lo,hi) from anywhere, with the pc
+ * that did it - see README, "what writes into &8428/&83e8". */
+void watch_write(uint32_t addr, uint32_t val)
+{
+    static int n;
+    uint32_t lo = 0x83e0, hi = 0x8468;
+    if (addr >= lo && addr < hi && n < 40) {
+        n++;
+        fprintf(stderr, "watch: pc=%08x wrote %08x -> [%08x] (icount %llu)\n",
+                g_cur_pc, val, addr, (unsigned long long)icount);
+    }
 }
 static void dump_pchist(void)
 {
@@ -377,7 +391,9 @@ static void rt_service(int vsync_now)
         if (quit_requested) finish("window closed");
         display_present(displayed(), vdu_mode == 15 ? 640 : 320);
         monotonic += 2;
-        call_852c(0x40, 0);   /* bit 6 (flyback/VSync) only: the safe, early-return branch */
+        /* call_852c(0x40, 0); disabled - spec_852c has zero callers and its
+         * source tables never get populated (see README); OS_Word 12 turned
+         * out to be the real palette mechanism the game actually uses. */
         uint32_t r[2] = {4, 0};
         call_vector(0x10, 2, r);
         if (mouse_buttons != last_buttons) {
@@ -656,6 +672,10 @@ void swi(uint32_t n, uint32_t nextpc)
         uint8_t *blk = MEM + R[1];
         if (interactive && R[0] == 21 && blk[0] == 3)       /* set mouse position */
             display_set_mouse((int16_t)(blk[1] | blk[2] << 8), (int16_t)(blk[3] | blk[4] << 8));
+        if (R[0] == 12) {                                    /* OS_Word 12: write palette entry */
+            unsigned colour = blk[0] & 0xF;                   /* logical colour 0-15 (4bpp) */
+            vidc_palette[colour] = blk[1] | (uint32_t)blk[2] << 8 | (uint32_t)blk[3] << 16;
+        }
         if (R[0] == 21 && blk[0] == 0)
             ev("OS_Word", "isi", R[0], blk, 6, blk[6] | blk[7] << 8 | blk[8] << 16 | (uint32_t)blk[9] << 24);
         else ev("OS_Word", "is", R[0], blk, 8);

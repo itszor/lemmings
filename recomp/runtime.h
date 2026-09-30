@@ -86,6 +86,7 @@ static inline uint32_t RD8(uint32_t a) { return MEM[a & 0x3FFFFFF]; }
 #define CODECHK(a) do { if ((a) < img_end && (a) >= 0x8000 && \
         (codemap[((a) - 0x8000) >> 5] >> ((((a) - 0x8000) >> 2) & 7) & 1)) smc_write(a); } while (0)
 void vidc_write(uint32_t v);           /* runtime.c: physical VIDC register writes, &3400000 */
+void watch_write(uint32_t addr, uint32_t val);   /* TEMP: see runtime.c */
 static inline void WR32(uint32_t a, uint32_t v)
 {
     if ((a & 0x3FFFFFC) == 0x3400000) { vidc_write(v); return; }
@@ -98,12 +99,14 @@ static inline void WR32(uint32_t a, uint32_t v)
      */
     if ((a & 0x3FFFFFC) == 0x84e8 || (a & 0x3FFFFFC) == 0x84ec) return;
     a &= 0x3FFFFFC;
+    watch_write(a, v);
     CODECHK(a);
     *(uint32_t *)(MEM + a) = v;
 }
 static inline void WR8(uint32_t a, uint32_t v)
 {
     a &= 0x3FFFFFF;
+    watch_write(a & ~3u, v);
     CODECHK(a & ~3u);
     MEM[a] = (uint8_t)v;
 }

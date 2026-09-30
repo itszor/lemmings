@@ -429,14 +429,28 @@ where run_script() lives), so --script is silently ignored under
 --headless - inherited from galactic dan, not something we changed. Use
 interactive mode (needs a real or virtual display) for scripted input.
 
-Still black on screen, even past this point: the palette source tables
-(&8428/&83e8) stay all-zero through the whole sequence above (confirmed:
-vidc_palette[] is unconditionally updated every frame by our forced
-call_852c(), independent of the logging cap that made an earlier check
-look like it had "stopped" - it hadn't, the values are just genuinely
-still zero). So loading LemGrafix/LemLevels doesn't by itself populate
-the palette; something else must write the real colours into &8428/&83e8,
-and we haven't found what yet (next step: search for what writes *into*
-that 64-byte range, as opposed to what reads the addresses *of* it, which
-is what we've searched for so far - a plain byte/word scan won't find a
-loop-driven table fill).
+RESOLVED - spec_852c was a red herring. Added a genuine write-watchpoint
+(watch_write() in runtime.c/.h, hooked into WR32/WR8) on &83e0-&8467
+instead of more static guessing: confirmed nothing, ever, writes into that
+range in any run, including well past the level-load sequence above -
+it's dead/vestigial code, not the real mechanism.
+
+The real mechanism was hiding in plain sight in recomp.events the whole
+time: `OS_Word 12` (the standard, documented RISC OS "write palette entry"
+SWI - R1 -> {logical colour, 3-byte physical RGB}) fires regularly from
+early on, and we'd been logging it without implementing it. Implemented
+properly in swi()'s case 7: write straight into vidc_palette[colour & 0xF].
+Also removed the call_852c() experiment entirely (spec_852c is simply
+never used by this build - not a bug in our emulation, the game just
+doesn't call it).
+
+Result: real, correctly-decoded colour on screen. A ~40-second run past
+the start click shows the skill-icon panel with its actual palette - a
+dark red/maroon background (colour 0 = &18 -> RGB(136,17,0)), matching
+what Lemmings' control panel should look like. Only colour 0 has been
+observed being set so far in the runs we've tried (screen is otherwise
+still black/colour-0 where other logical colours would apply) - either
+the other 15 palette-setting calls happen even later than we've run for,
+or there's a second piece to this (e.g. a bulk multi-colour variant, or
+the remaining colours are set once during a slower asset-decode step we
+haven't waited long enough for) - not yet confirmed either way.
