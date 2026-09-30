@@ -355,17 +355,36 @@ runtime.c's vidc_write() records the live palette into vidc_palette[16] and
 logs any non-palette VIDC register write - none seen yet - to vidc.log) and
 display.c reads vidc_palette every frame instead of using a fixed table.
 
-Not yet working: the routine that actually calls spec_852c does so through
-a *self-modifying vector-chain install* (traced back to &2a6bc: loads a
-pointer to &852c itself, then `ldr r0,[r0]` - reading &852c's own first
-word as a stored value rather than executing it, then stores that into low
-workspace &100 - a classic "old vector saved for chaining" trick, but with
-the twist that the new handler's own compiled first instruction doubles as
-the storage slot). Forcing plausible IOC status bits before delivering our
-synthetic VSync event didn't trigger it, meaning the real gating condition
-isn't simply "some IOC status bit is set" - needs the vector-chain install
-sequence read properly to understand what actually invokes spec_852c and
-when. Until then, vidc_palette stays all-zero (black screen) in normal
-runs; the panel/icon shapes we did confirm were seen by temporarily forcing
-a test grayscale palette (removed again - see git history if picking this
-back up).
+UPDATE: spec_852c has zero callers - confirmed both in
+ghidra/out/lemprog/functions.tsv (callers=0) and by instrumenting every
+instruction executed (dbg_hook() in runtime.h/.c, still present but
+currently a no-op): never once reached in 100M instructions. The &2a6bc
+install sequence writes into absolute low workspace &100, not through
+OS_Claim/Event_V like the &2a70c handler (which *is* correctly claimed and
+called, confirmed via OS_Claim in the event log) - &100 is almost
+certainly a lower-level, direct hardware-IRQ dispatch slot the kernel
+itself reads on every interrupt, which we don't emulate (we only simulate
+the OS_Claim/Event_V layer, not the kernel's own internal IRQ chain).
+
+Rather than reverse-engineer that kernel internal, runtime.c's rt_service()
+now calls spec_852c directly every frame (call_852c(), bit 6/flyback set,
+bit 3 clear - the branch that does an early return before falling through
+to a chain-handler call we're not sure is safely initialised). This DOES
+fire correctly now (vidc.log shows all 16 registers being written every
+frame, right on the per-frame cadence) - but every value is zero. The
+*mechanism* is right; the *source table* (&8428) is still unpopulated at
+the point we're calling it.
+
+Why: recomp.events shows only three OS_File loads happen, ever, in a 5+
+billion instruction run - LemGrafP, then LemLevels.Musinfo, then
+sampdatp - and then nothing. The game loads its general graphics
+parameters and the sound assets, then appears to stop making forward
+progress entirely (no level/LemGrafix loads, matching the loader found
+earlier). Most likely: it's waiting on a response from MusicModule2 (the
+custom &41C40-&41C4B SWI chunk) that our stub (musmod2_swi() in
+runtime.c) doesn't provide - it just logs and returns, which may not
+satisfy whatever polling/callback protocol the game expects before it
+considers sound "ready" and moves on to loading a level. This needs
+musmod2's actual SWI protocol understood (or at least guessed at more
+carefully than blind stubbing) to make further progress - not a palette
+problem anymore, a sound-module protocol problem.

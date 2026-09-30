@@ -34,11 +34,12 @@ void bad_entry(uint32_t fn, uint32_t e);
 void undefined_insn(uint32_t a, uint32_t w);
 
 /* ---- instruction prologue: count, and service interrupts at exact counts ---- */
+void dbg_hook(uint32_t a);              /* TEMP: see runtime.c */
 #ifdef RECOMP_TRACE
 void trace_insn(uint32_t a);
-#define I(a)  do { if (icount >= irq_next) irq_point(); trace_insn(a); icount++; } while (0)
+#define I(a)  do { if (icount >= irq_next) irq_point(); trace_insn(a); dbg_hook(a); icount++; } while (0)
 #else
-#define I(a)  do { if (icount >= irq_next) irq_point(); icount++; } while (0)
+#define I(a)  do { if (icount >= irq_next) irq_point(); dbg_hook(a); icount++; } while (0)
 #endif
 
 /* ---- flags ------------------------------------------------------------------ */

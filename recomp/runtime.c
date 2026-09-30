@@ -109,6 +109,33 @@ static void run_script(void)
 }
 #define CS_NS 10000000ull
 
+void dbg_hook(uint32_t a) { (void)a; }
+
+/* spec_852c (the VIDC palette-load routine) has zero static/traced callers
+ * (confirmed both in ghidra/out/lemprog/functions.tsv and by instrumenting
+ * every instruction: never reached in 100M instructions). Its install code
+ * (&2a688-&2a6e4) writes into absolute low workspace &100, not through
+ * OS_Claim/Event_V like &2a70c - almost certainly a lower-level, direct
+ * hardware-IRQ dispatch slot the kernel itself reads that we don't emulate.
+ * Rather than reverse-engineer that kernel internal, call it ourselves. */
+static void run_until(uint32_t stop);
+static void call_852c(uint32_t ioc14, uint32_t ioc24)
+{
+    if (!(0x8000 <= 0x852c && 0x852c < img_end && entry_tab[(0x852c - LOAD) >> 2])) return;
+    WR32(0x3200014, ioc14);
+    WR32(0x3200024, ioc24);
+    uint32_t saved[16], sf[4] = {NF, ZF, CF, VF}, snpc = npc;
+    memcpy(saved, R, sizeof R);
+    R[14] = HANDLER_RET;
+    npc = 0x852c;
+    in_handler = 1;
+    run_until(HANDLER_RET);
+    in_handler = 0;
+    memcpy(R, saved, sizeof R);
+    NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
+    npc = snpc;
+}
+
 uint32_t os_write_bank_addr(void) { return SCREEN + bank * 0x14000; }
 uint32_t os_screen_base(void) { return SCREEN; }
 
@@ -144,6 +171,7 @@ static struct { int inkey; uint64_t from, to; } keys[1];
 static unsigned nkeys;
 
 static void finish(const char *why) __attribute__((noreturn));
+static void run_until(uint32_t stop);
 static int hostpath(const char *name, char *out);
 static long load_file(const char *path, uint32_t addr);
 
@@ -328,6 +356,7 @@ static void rt_service(int vsync_now)
         if (quit_requested) finish("window closed");
         display_present(displayed(), vdu_mode == 15 ? 640 : 320);
         monotonic += 2;
+        call_852c(0x40, 0);   /* bit 6 (flyback/VSync) only: the safe, early-return branch */
         uint32_t r[2] = {4, 0};
         call_vector(0x10, 2, r);
         if (mouse_buttons != last_buttons) {
