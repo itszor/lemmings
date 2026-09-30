@@ -295,10 +295,77 @@ Status / next steps
    bytes out for anything downstream. Actual level-format decoding is
    explicitly deferred per current priorities (finding code > decoding
    data).
-6. Only after LemProg (+ MemMod + musmod2) are disassembled and reassemble
-   byte-identically (galactic dan's asm/ milestone) does static
-   recompilation to C (recomp/, galactic dan's gen_c.py) become relevant.
+6. Reassembly (asm/lemprog, asm/lemboot): DONE - both reassemble
+   byte-identical to the originals (lemmings.s currently 0 .inst fallbacks,
+   lemboot.s 0).
+7. Static recompilation to C (recomp/): DONE for this stage, reusing
+   galactic dan's recomp/ wholesale (runtime.h is verbatim - it's pure ARM2
+   semantics; gen_c.py's translator logic is unmodified, only its
+   hardcoded paths were parametrized). One deliberate departure from
+   galactic dan: instead of silently falling back to a full interpreter for
+   any untranslated address (galactic dan's approach), call_addr() logs and
+   exits immediately by default - see "Fixing spider's false negatives"
+   below for why, and --trace-gaps for the diagnostic escape hatch.
+   Found and fixed three more instances of the same root problem as the
+   &27a60 fix above (spider/gen_c.py assuming ordinary call-return
+   semantics on idioms that don't use it - see git log for the three
+   commits). The recompiled binary now runs 100,000,000 instructions
+   headless (0 gaps, 0 interpreted) and 4Bn+ instructions in a real
+   interactive SDL run before being killed - i.e. the entire startup/init/
+   main-loop path is fully statically translated.
+8. Screen mode: IN PROGRESS. Confirmed 4bpp/16-colour (matches the Amiga
+   original, not a 256-colour Archimedes mode) and confirmed LemProg
+   programs VIDC's palette registers *directly* (physical address
+   &3400000), bypassing the OS entirely - see "Screen mode and the VIDC
+   palette split" below. The exact trigger for the mid-screen panel/game
+   palette split (a self-modifying vector-chain install we haven't fully
+   read yet) isn't understood, so the real palette values aren't visible
+   yet, but forcing a test palette confirms the pixel-unpacking geometry is
+   right: the screen memory clearly shows what looks like Lemmings' skill-
+   icon panel (a row of 5-ish distinct icon-shaped blocks under a
+   repeating top band), not noise.
+9. Not started: MemMod and musmod2 (RISC OS *modules*, different header
+   format, entered via multiple SWI/vector points rather than one -
+   spider.py/gen_asm.py assume absolute load code and would need adapting);
+   sound (musmod2's own SWI chunk is stubbed to log-and-continue, see
+   runtime.c); input handling for actual gameplay; LemGrafix/LemLevels
+   asset loading and format (found but not pursued - see above).
 
 This is comparable in scope to galactic dan, possibly larger (multiple
 cooperating modules instead of one blob, plus a real level-data format to
 reverse), but with no copy protection to defeat first.
+
+Screen mode and the VIDC palette split
+---------------------------------------
+Confirmed in ghidra/out/lemprog/lemmings.c (spec_852c @ &852c): a 16-word
+table gets loaded into VIDC's palette registers via
+`_DAT_03400000 = *puVar2 | iVar3 << 0x1a` (value | register<<26 is VIDC's
+real register-write format; registers 0-15 are the 16 palette entries,
+4 bits each of R/G/B - 4bpp, matching the Amiga original, not a 256-colour
+Archimedes mode). There are *two* such tables (&8428 and &83e8, selected by
+an if/else on real IOC hardware interrupt-status bits at &3200014/
+&3200024) - this is exactly the mid-screen "copper style" panel/game
+palette split you'd expect, confirmed rather than guessed.
+
+Both tables read as all-zero statically - they're runtime variables,
+populated during startup, not baked into the image. tools/ doesn't have a
+way to recover them without running the game, so recomp/runtime.c now
+intercepts physical writes to &3400000 (WR32 in runtime.h checks for it,
+runtime.c's vidc_write() records the live palette into vidc_palette[16] and
+logs any non-palette VIDC register write - none seen yet - to vidc.log) and
+display.c reads vidc_palette every frame instead of using a fixed table.
+
+Not yet working: the routine that actually calls spec_852c does so through
+a *self-modifying vector-chain install* (traced back to &2a6bc: loads a
+pointer to &852c itself, then `ldr r0,[r0]` - reading &852c's own first
+word as a stored value rather than executing it, then stores that into low
+workspace &100 - a classic "old vector saved for chaining" trick, but with
+the twist that the new handler's own compiled first instruction doubles as
+the storage slot). Forcing plausible IOC status bits before delivering our
+synthetic VSync event didn't trigger it, meaning the real gating condition
+isn't simply "some IOC status bit is set" - needs the vector-chain install
+sequence read properly to understand what actually invokes spec_852c and
+when. Until then, vidc_palette stays all-zero (black screen) in normal
+runs; the panel/icon shapes we did confirm were seen by temporarily forcing
+a test grayscale palette (removed again - see git history if picking this
+back up).

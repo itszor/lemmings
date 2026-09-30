@@ -149,7 +149,9 @@ int display_init(int scale, const char *fs)
     }
     tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, 640, 256);
     SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
-    for (int c = 0; c < 256; c++) {              /* default 256-colour palette */
+    for (int c = 0; c < 256; c++) {              /* default 256-colour palette (unused for
+                                                      Lemmings - see update_palette() below;
+                                                      kept as a fallback for --full-os VDU) */
         int t = c & 3;
         int r = ((c >> 4) & 1) << 3 | ((c >> 2) & 1) << 2 | t;
         int g = ((c >> 6) & 1) << 3 | ((c >> 5) & 1) << 2 | t;
@@ -159,14 +161,31 @@ int display_init(int scale, const char *fs)
     return 1;
 }
 
+/* Lemmings programs VIDC's 16-entry palette directly (runtime.c's
+ * vidc_write()), not via the OS - refresh our copy from it each frame.
+ * Register format: bits 0-3 red, 4-7 green, 8-11 blue (4 bits each, 4bpp). */
+static void update_palette(void)
+{
+    for (int c = 0; c < 16; c++) {
+        uint32_t v = vidc_palette[c];
+        int r = (v & 0xF) * 17, g = ((v >> 4) & 0xF) * 17, b = ((v >> 8) & 0xF) * 17;
+        palette[c] = (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+    }
+}
+
 void display_present(const uint8_t *pix, int width)
 {
     uint32_t *out;
     int pitch;
+    update_palette();
     if (!SDL_LockTexture(tex, NULL, (void **)&out, &pitch)) return;
     for (int y = 0; y < 256; y++) {
         uint32_t *row = (uint32_t *)((uint8_t *)out + y * pitch);
-        for (int x = 0; x < width; x++) row[x] = palette[pix[y * width + x]];
+        for (int x = 0; x < width; x++) {
+            uint8_t byte = pix[y * (width / 2) + x / 2];
+            uint8_t nib = (x & 1) ? (byte >> 4) : (byte & 0xF);
+            row[x] = palette[nib];
+        }
     }
     SDL_UnlockTexture(tex);
     SDL_FRect src = {0, 0, (float)width, 256};
@@ -261,9 +280,14 @@ void display_screenshot(const uint8_t *pix, int width, const char *path)
 {
     SDL_Surface *s = SDL_CreateSurface(width, 256, SDL_PIXELFORMAT_XRGB8888);
     if (!s) return;
+    update_palette();
     for (int y = 0; y < 256; y++) {
         uint32_t *row = (uint32_t *)((uint8_t *)s->pixels + y * s->pitch);
-        for (int x = 0; x < width; x++) row[x] = palette[pix[y * width + x]];
+        for (int x = 0; x < width; x++) {
+            uint8_t byte = pix[y * (width / 2) + x / 2];
+            uint8_t nib = (x & 1) ? (byte >> 4) : (byte & 0xF);
+            row[x] = palette[nib];
+        }
     }
     SDL_SaveBMP(s, path);
     SDL_DestroySurface(s);

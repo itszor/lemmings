@@ -84,8 +84,10 @@ static inline uint32_t RD32(uint32_t a)
 static inline uint32_t RD8(uint32_t a) { return MEM[a & 0x3FFFFFF]; }
 #define CODECHK(a) do { if ((a) < img_end && (a) >= 0x8000 && \
         (codemap[((a) - 0x8000) >> 5] >> ((((a) - 0x8000) >> 2) & 7) & 1)) smc_write(a); } while (0)
+void vidc_write(uint32_t v);           /* runtime.c: physical VIDC register writes, &3400000 */
 static inline void WR32(uint32_t a, uint32_t v)
 {
+    if ((a & 0x3FFFFFC) == 0x3400000) { vidc_write(v); return; }
     a &= 0x3FFFFFC;
     CODECHK(a);
     *(uint32_t *)(MEM + a) = v;

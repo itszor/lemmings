@@ -112,6 +112,29 @@ static void run_script(void)
 uint32_t os_write_bank_addr(void) { return SCREEN + bank * 0x14000; }
 uint32_t os_screen_base(void) { return SCREEN; }
 
+/* Direct VIDC register writes (physical &3400000): LemProg bypasses the OS
+ * VDU driver entirely for the palette (confirmed: a 16-word table gets
+ * loaded into registers 0-15 from an interrupt handler at &852c, for a
+ * mid-screen "copper" style panel/game palette split - see README). VIDC's
+ * write format is value | (register << 26); registers 0-15 are the 16
+ * palette entries (4 bits each of B,G,R, i.e. 4bpp/16-colour, matching the
+ * Amiga original), higher register numbers are screen timing (border/
+ * sync/etc - not yet decoded, just logged for now). */
+uint32_t vidc_palette[16] = {0};        /* 0x0BGR per entry; display.c reads this */
+static int vidc_seen[64];
+void vidc_write(uint32_t v)
+{
+    unsigned reg = v >> 26;
+    uint32_t val = v & 0x3FFFFFF;
+    if (reg < 16) vidc_palette[reg] = val;
+    if (vidc_seen[reg] < 8) {
+        vidc_seen[reg]++;
+        FILE *f = fopen("vidc.log", "a");
+        if (f) { fprintf(f, "%llu: VIDC reg %u = %#x (raw %#x)\n",
+                          (unsigned long long)icount, reg, val, v); fclose(f); }
+    }
+}
+
 /* scenario: no fixed click/key timings for Lemmings yet (galactic dan's were
  * tuned to its title screen); headless (--limit=N) runs are keyboard/mouse-
  * silent until we have real ones, or use --script for ad hoc input. */
