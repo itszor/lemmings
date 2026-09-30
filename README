@@ -92,20 +92,26 @@ extracted_decompressed/ Decompressed game files, built by tools/unpack_*.py.
                                                is native ARM code, written
                                                specifically for this port.
                            Krisalis.bin        32000 bytes, load &8000 - a
-                           PSYGNO.bin          320x100 8bpp splash bitmap
-                           DMALOGO.bin         (indexed colour, mostly zero/
-                                               background). Rendered and
-                                               visually confirmed (see docs/
+                           PSYGNO.bin          320x200 4bpp (16-colour, two
+                           DMALOGO.bin         pixels/byte, high nibble
+                                               first) splash bitmap - this
+                                               is an Amiga-derived port, so
+                                               16 colours, not 256; an
+                                               initial 8bpp/320x100 guess
+                                               rendered as a duplicated,
+                                               squashed image (32000 bytes
+                                               also happens to divide as
+                                               320x100 8bpp) and was wrong.
+                                               Rendered and visually
+                                               confirmed at the correct
+                                               dimensions (see docs/
                                                *_preview.png): DMALOGO is the
                                                DMA Design logo, PSYGNO is the
                                                Psygnosis logo, Krisalis.bin
-                                               is the Krisalis logo. Each
-                                               image is doubled left/right
-                                               within the 320x100 frame (i.e.
-                                               likely a 160x100 sprite shown
-                                               pixel-doubled, or stored
-                                               doubled for a specific screen
-                                               mode - not confirmed which).
+                                               is the Krisalis logo. No
+                                               palette recovered yet - previews
+                                               are rendered as grayscale
+                                               (nibble value x17).
 
 ghidra/                  Carried over from galactic dan and confirmed
                           working on real code:
@@ -169,9 +175,9 @@ Krisalis/PSYGNO/DMALOGO use a second, near-identical call site (file offset
 instead of using a fixed constant - real LemBoot presumably fills that slot
 in dynamically before each call (not traced), but all three decompress
 cleanly when we pre-seed it to &8000 ourselves, same as LemProg's target.
-The result for each is a 320x100 8bpp bitmap that renders as the expected
-logo (see docs/*_preview.png) - about as strong a correctness check on the
-whole codec-by-emulation approach as we could ask for.
+The result for each is a 320x200 4bpp (16-colour) bitmap that renders as
+the expected logo (see docs/*_preview.png) - about as strong a correctness
+check on the whole codec-by-emulation approach as we could ask for.
 
 LemGrafix/LemLevels are NOT loaded by LemBoot at all - grepping strings out
 of the decompressed LemProg.bin turns up "LemGrafix.ArcGrn1P",
