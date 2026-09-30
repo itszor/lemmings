@@ -1,0 +1,18 @@
+# Python / editors
+__pycache__/
+*.pyc
+*.swp
+
+# Ghidra database and headless output (regenerate with ghidra/run_ghidra_*.sh)
+ghidra/project/
+ghidra/out/
+ghidra/*.json
+ghidra/*.pickle
+
+# Reassembly / recompilation products, once those stages exist
+asm/*.o
+asm/*.elf
+asm/*.png
+asm/*.log
+recomp/gen/
+recomp/*.o
