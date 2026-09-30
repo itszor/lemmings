@@ -40,6 +40,17 @@ class Image:
         return self.data[a - self.base]
 
 
+def literal_thunk(img, tgt):
+    """True if tgt is one of this codebase's register-load thunks: 'bic lr,
+    lr,#0xfc000003 ; ldr rX,[lr],#4 ; mov pc,lr'. A 'bl' to one of these
+    does not return to the call site + 4 like a normal call: it consumes
+    one literal data word there, then resumes at call site + 8. There are
+    14 of these (one per register r0-r12 and sp) forming the vector table
+    at the very start of every image using this idiom (LemBoot, LemProg)."""
+    return (img.inside(tgt) and img.inside(tgt + 8)
+            and img.word(tgt) == 0xE3CEE3FF and img.word(tgt + 8) == 0xE1A0F00E)
+
+
 def valid_arm2(w):
     """Is this word plausibly an ARM2/ARM3 instruction?  Returns reason or None."""
     cond = w >> 28
@@ -169,6 +180,9 @@ class Spider:
                     if not w & (1 << 24): self.overrides[a] = 'CALL'
                     self.add_func(tgt, a)
                     regs.clear()
+                    if w & (1 << 24) and literal_thunk(img, tgt):
+                        self.add_data(nxt, 4, 'literal consumed by register-load thunk')
+                        a = nxt + 4; prev.append(w); continue
                 else:
                     self.work.append((tgt, fn))
                     if always:

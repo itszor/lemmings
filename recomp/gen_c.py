@@ -121,6 +121,25 @@ class Recomp:
             off -= 0x1000000
         return (a + 8 + off * 4) & 0x3FFFFFC
 
+    def is_literal_thunk(self, tgt):
+        """See spider.literal_thunk: 'bic lr,lr,#0xfc000003 ; ldr rX,[lr],#4 ;
+        mov pc,lr'. A 'bl' to one of these consumes one literal word right
+        after the call site and resumes at call site + 8, not + 4."""
+        return (BASE <= tgt < self.end - 8 and self.word(tgt) == 0xE3CEE3FF
+                and self.word(tgt + 8) == 0xE1A0F00E)
+
+    def call_return_site(self, a, w, tgt):
+        return a + 8 if (w & (1 << 24)) and self.is_literal_thunk(tgt) else a + 4
+
+    def natural_next(self, a, w):
+        """Where control genuinely continues after instruction a, for the
+        generic 'falls out of this function' trailer in emit_function(). For
+        a literal-thunk call this is a+8 (the literal at a+4 is data, not
+        the next instruction) - everywhere else it's the usual a+4."""
+        if (w >> 25) & 7 == 5 and w & (1 << 24):
+            return self.call_return_site(a, w, self.branch_target(a, w))
+        return a + 4
+
     def find_leaders(self):
         L = set()
         for a in self.code:
@@ -129,9 +148,10 @@ class Recomp:
                 L.add(a)
             t = (w >> 25) & 7
             if t == 5:
-                L.add(self.branch_target(a, w))
+                tgt = self.branch_target(a, w)
+                L.add(tgt)
                 if w & (1 << 24) or self.overrides.get(a) == 'CALL':
-                    L.add(a + 4)                                  # return site
+                    L.add(self.call_return_site(a, w, tgt))        # return site
             if self.overrides.get(a) == 'CALL':
                 L.add(a + 4)
             if t == 1 and ((w >> 16) & 15) == 15 and ((w >> 21) & 15) in (2, 4):
@@ -286,7 +306,10 @@ class Recomp:
         if t == 5:
             tgt = self.branch_target(a, w)
             if w & (1 << 24):
-                return ['R[14] = %s | PSR();' % h(a + 4), self.call_code(tgt, a + 4)]
+                # R[14] is always call site + 4 (real ARM semantics; the
+                # literal-thunk idiom itself depends on this) - only the
+                # *expected return site* for the CALL() macro differs.
+                return ['R[14] = %s | PSR();' % h(a + 4), self.call_code(tgt, self.call_return_site(a, w, tgt))]
             if self.overrides.get(a) == 'CALL':
                 return [self.call_code(tgt, a + 4)]
             return [self.jump_code(fn, tgt)]
@@ -426,8 +449,9 @@ class Recomp:
                 out += ['    ' + l for l in self.smc_switch(fn, x, w)]
             else:
                 out += ['    ' + l for l in self.translate(fn, x, w)]
-            if x + 4 not in own:
-                out.append('    JUMP(%s);' % h(x + 4))        # falls out of this function
+            nxt = self.natural_next(x, w)
+            if nxt not in own:
+                out.append('    JUMP(%s);' % h(nxt))        # falls out of this function
         out.append('}')
         return out
 
