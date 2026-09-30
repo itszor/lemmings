@@ -48,6 +48,9 @@ def load_analysis(img_path, json_path, tsvdir, dyn):
         e = int(line.split('\t')[0], 16)
         if e < 0x10000000:
             names[e] = 'sub_%x' % e
+    def word_at(x):
+        return int.from_bytes(img[x - BASE:x - BASE + 4], 'little')
+
     extra = set()
     strs = [(a, a + l) for a, l, t in j['strings']]
     go = os.path.join(tsvdir, 'ghidra_only_code.txt')
@@ -55,9 +58,29 @@ def load_analysis(img_path, json_path, tsvdir, dyn):
         for line in open(go):
             s, e = (int(x, 16) for x in line.split('-'))
             words = range(s & ~3, e + 1, 4)
-            if all(spider.valid_arm2(int.from_bytes(img[x - BASE:x - BASE + 4], 'little')) is None
+            if all(spider.valid_arm2(word_at(x)) is None
                    for x in words) and not any(a < e + 1 and s < b for a, b in strs):
                 extra.update(words)
+
+    # A "ghidra-only" acceptance can land on a lone 'stmdb sp!, {pc}' (this
+    # codebase's other call idiom besides the register-load thunks: push a
+    # fake return address, then an inert NV filler word, then the real
+    # branch - see spider.py's matching fix in trace()'s LDM/STM handling).
+    # Unlike code spider actually traced, this single-word acceptance never
+    # goes through that logic, so the branch two words later is never
+    # pulled in as code at all - extend it here the same way.
+    for a in list(extra):
+        if word_at(a) & 0x0FFFFFFF == 0x092D8000:  # <cond> stmdb sp!, {pc}
+            if word_at(a + 4) >> 28 == 0xF and (word_at(a + 8) >> 25) & 7 == 5:
+                extra.add(a + 8)
+                # a+12 is where control resumes once the callee eventually
+                # pops the address we just pushed (ARM2 quirk: an STM that
+                # stores PC stores a+12, not a+4/a+8) - there is no static
+                # path to it at all (the branch at a+8 doesn't fall through),
+                # so it's only discoverable by understanding this idiom.
+                if spider.valid_arm2(word_at(a + 12)) is None:
+                    extra.add(a + 12)
+
     g = gen_asm.Gen(img, BASE, j, sp, names, extra)
     g.dyn = dyn
     g.notes = {}
@@ -135,13 +158,26 @@ class Recomp:
         """Where control genuinely continues after instruction a, for the
         generic 'falls out of this function' trailer in emit_function(). For
         a literal-thunk call this is a+8 (the literal at a+4 is data, not
-        the next instruction) - everywhere else it's the usual a+4."""
+        the next instruction); same for a bare 'stmdb sp!, {pc}' (the other
+        push-fake-return-address idiom - see load_analysis()'s matching
+        extension) - everywhere else it's the usual a+4."""
         if (w >> 25) & 7 == 5 and w & (1 << 24):
             return self.call_return_site(a, w, self.branch_target(a, w))
+        if w & 0x0FFFFFFF == 0x092D8000:
+            return a + 8
         return a + 4
 
     def find_leaders(self):
-        L = set()
+        # Every classified-code address is independently dispatchable, not
+        # just ones with a statically-known incoming branch: all state lives
+        # in R[]/MEM (no local C variables carry meaning across
+        # instructions, except inside a Duff loop - plan_duff_loops() below
+        # discards those from this set once it turns them into a real loop),
+        # so this matches real ARM2 semantics, where any address can be
+        # jumped to. Needed for e.g. &19388/&2a3a0: real code with no static
+        # caller anywhere (found only by running --trace-gaps), most likely
+        # a level-object/skill dispatch table built at runtime.
+        L = set(self.code)
         for a in self.code:
             w = self.word(a)
             if a in self.g.labels:

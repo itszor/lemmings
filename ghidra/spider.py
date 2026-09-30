@@ -159,6 +159,9 @@ class Spider:
                 self.problems.append((a, 'code flows into data (from func %08x)' % fn))
                 return
             w = img.word(a)
+            if w >> 28 == 0xF:            # NV: never executes on ARM2, whatever the rest encodes
+                self.code[a] = fn
+                a += 4; prev.append(w); continue
             bad = valid_arm2(w)
             if bad:
                 self.problems.append((a, 'invalid (%s) reached from func %08x' % (bad, fn)))
@@ -321,6 +324,13 @@ class Spider:
                     if fw >> 28 == 0xF and (bw >> 25) & 7 == 5:
                         self.code[nxt] = fn
                         nxt += 4
+                        # The value actually pushed is a+12 (ARM2: an STM
+                        # storing PC stores current-instruction+12, not +4),
+                        # and that's where control resumes once the callee
+                        # eventually pops it - explore it as its own
+                        # function, exactly like a genuine call target, since
+                        # nothing else points to it statically.
+                        self.add_func(a + 12, a)
                 a = nxt; prev.append(w); continue
 
             # MUL/MLA/SWP/coprocessor

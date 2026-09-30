@@ -10,6 +10,12 @@ IMG="$HERE/../extracted_decompressed/LemProg.bin"
 if [ ! -f "$IMG" ]; then
     python3 "$HERE/../tools/unpack_lemboot.py" LemProg 8aac 8ae8 8000 "$IMG"
 fi
+# &19388: an isolated "push fake return address; branch" stub Ghidra found
+# on its own but spider never reached (no static caller - see README).
+# Seeding it here lets spider's own recursive trace discover everything
+# downstream properly, instead of it staying speculative/unreached: this
+# one entry point took firm (non-speculative) coverage from ~0.1% to ~23%.
+python3 "$HERE/export_ghidra.py" "$IMG" 8000 "$HERE/lemprog.json" 0x19388
 rm -rf "$HERE/project/LemProg.gpr" "$HERE/project/LemProg.rep"
 mkdir -p "$HERE/project" "$HERE/out/lemprog"
 "$G/support/analyzeHeadless" "$HERE/project" LemProg \
