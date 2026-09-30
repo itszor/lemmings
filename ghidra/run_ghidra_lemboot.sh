@@ -17,5 +17,5 @@ mkdir -p "$HERE/project" "$HERE/out/lemboot"
     -processor ARM:LE:32:v4 -cspec default \
     -scriptPath "$HERE/scripts" \
     -preScript ApplyRiscOSAnnotations.java "$HERE/lemboot.json" \
-    -postScript RiscOSPostAnalysis.java "$HERE/lemboot.json" "$HERE/out/lemboot" \
+    -postScript RiscOSPostAnalysis.java "$HERE/lemboot.json" "$HERE/out/lemboot" lemboot \
     2>&1 | tee "$HERE/out/lemboot/headless_lemboot.log" | grep -E 'INFO .*\.java>|ERROR|WARN.*Script|Exception'

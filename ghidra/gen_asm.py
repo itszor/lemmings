@@ -1,8 +1,10 @@
 """Generate reassemblable GNU as source for a RISC OS absolute from the
-spider's classification (galdan.json + its .pickle) and Ghidra's function
-names (out/functions.tsv), then verify it rebuilds byte-identically.
+spider's classification (<name>.json + its .pickle) and Ghidra's function
+names (<tsvdir>/functions.tsv), then verify it rebuilds byte-identically.
 
-Usage: gen_asm.py image loadaddr galdan.json outdir
+Usage: gen_asm.py image loadaddr name.json outdir
+           [--name=galdan] [--outimg=GalacticDan,ff8] [--tsvdir=out]
+           [--pad=addr:n,...] [--dyn=path,...] [--notes=path]
 """
 import sys, os, re, json, pickle, subprocess, collections
 
@@ -504,6 +506,9 @@ def main():
     args = [x for x in sys.argv[1:] if not x.startswith('--')]
     opts = dict(x[2:].split('=', 1) for x in sys.argv[1:] if x.startswith('--'))
     path, base, jpath, outdir = args[0], int(args[1], 16), args[2], args[3]
+    name = opts.get('name', 'galdan')            # output .s/.o/.elf basename
+    outimg = opts.get('outimg', 'GalacticDan,ff8')  # rebuilt-image filename
+    tsvdir = os.path.join(HERE, opts.get('tsvdir', 'out'))
     pads = {}
     for p in filter(None, opts.get('pad', '').split(',')):
         a, n = p.split(':')
@@ -513,7 +518,7 @@ def main():
     j = json.load(open(jpath))
     sp = pickle.load(open(jpath + '.pickle', 'rb'))
     names = {}
-    tsv = os.path.join(HERE, 'out', 'functions.tsv')
+    tsv = os.path.join(tsvdir, 'functions.tsv')
     if os.path.exists(tsv):
         for line in open(tsv).read().splitlines()[1:]:
             e, n = line.split('\t')[:2]
@@ -523,7 +528,7 @@ def main():
                 # at some switch cases (caseD_*): keep only address-derived names.
                 names[e] = n if n in ('sub_%x' % e, 'spec_%x' % e, '_start') else 'sub_%x' % e
     extra = set()
-    go = os.path.join(HERE, 'out', 'ghidra_only_code.txt')
+    go = os.path.join(tsvdir, 'ghidra_only_code.txt')
     if os.path.exists(go):
         for line in open(go):
             s, e = (int(x, 16) for x in line.split('-'))
@@ -538,14 +543,15 @@ def main():
 
     with open(os.path.join(outdir, 'build.sh'), 'w') as f:
         f.write('''#!/bin/sh
-# Reassemble galdan.s and compare with the original image.
+# Reassemble %(name)s.s and compare with the original image.
 set -e
 cd "$(dirname "$0")"
-%(t)sas -march=armv2a -o galdan.o galdan.s
-%(t)sld -Ttext=0x%(b)x -e _start --no-warn-rwx-segments -o galdan.elf galdan.o
-%(t)sobjcopy -O binary -j .text galdan.elf GalacticDan,ff8
-cmp GalacticDan,ff8 "%(img)s" && echo "IDENTICAL to original"
-''' % dict(t=TOOLS, b=base, img=os.path.relpath(os.path.abspath(path), os.path.abspath(outdir))))
+%(t)sas -march=armv2a -o %(name)s.o %(name)s.s
+%(t)sld -Ttext=0x%(b)x -e _start --no-warn-rwx-segments -o %(name)s.elf %(name)s.o
+%(t)sobjcopy -O binary -j .text %(name)s.elf "%(outimg)s"
+cmp "%(outimg)s" "%(img)s" && echo "IDENTICAL to original"
+''' % dict(t=TOOLS, b=base, name=name, outimg=outimg,
+           img=os.path.relpath(os.path.abspath(path), os.path.abspath(outdir))))
 
     fallback = set()
     for it in range(10):
@@ -556,10 +562,10 @@ cmp GalacticDan,ff8 "%(img)s" && echo "IDENTICAL to original"
         g.notes = {int(k, 16): v for k, v in json.load(open(opts['notes'])).items()} if 'notes' in opts else {}
         g.assign_labels()
         src = g.generate(dis)
-        open(os.path.join(outdir, 'galdan.s'), 'w').write(src)
+        open(os.path.join(outdir, name + '.s'), 'w').write(src)
         rc, log = build(outdir)
         if pads:
-            print('padded build:', 'ok' if os.path.exists(os.path.join(outdir, 'GalacticDan,ff8')) else 'FAILED')
+            print('padded build:', 'ok' if os.path.exists(os.path.join(outdir, outimg)) else 'FAILED')
             print('\n'.join(l for l in log.splitlines() if 'Error' in l)[:3000])
             break
         if 'IDENTICAL' in log:
@@ -568,12 +574,12 @@ cmp GalacticDan,ff8 "%(img)s" && echo "IDENTICAL to original"
         # assembler errors: map line numbers back to addresses
         lines = src.split('\n')
         bad = set()
-        for m in re.finditer(r'galdan\.s:(\d+): Error', log):
+        for m in re.finditer(re.escape(name) + r'\.s:(\d+): Error', log):
             ln = lines[int(m.group(1)) - 1]
             mm = re.search(r'@ ([0-9a-f]+)', ln)
             if mm: bad.add(int(mm.group(1), 16))
-        if not bad and os.path.exists(os.path.join(outdir, 'GalacticDan,ff8')):
-            new = open(os.path.join(outdir, 'GalacticDan,ff8'), 'rb').read()
+        if not bad and os.path.exists(os.path.join(outdir, outimg)):
+            new = open(os.path.join(outdir, outimg), 'rb').read()
             if len(new) != len(img):
                 print('length mismatch', len(new), len(img)); print(log[-2000:]); break
             for off in range(0, len(img), 4):

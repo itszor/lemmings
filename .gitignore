@@ -9,10 +9,15 @@ ghidra/out/
 ghidra/*.json
 ghidra/*.pickle
 
-# Reassembly / recompilation products, once those stages exist
-asm/*.o
-asm/*.elf
+# Reassembly products (asm/*/build.sh) - keep the .s source, ignore the
+# rebuilt binary and intermediates
+asm/*/*.o
+asm/*/*.elf
+asm/*/LemProg,*
+asm/*/LemBoot,*
 asm/*.png
 asm/*.log
+
+# Recompilation products, once that stage exists
 recomp/gen/
 recomp/*.o

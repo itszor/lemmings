@@ -1,7 +1,8 @@
 // Post-analysis for RISC OS absolutes: install jump-table overrides for the
 // computed "add pc,pc,X" jumps into unrolled code, decompile every function
 // and report what Ghidra made of it.
-// Script arguments: JSON path, output directory.
+// Script arguments: JSON path, output directory, optional output basename
+// (default "decompile" - the .c file is written as <basename>.c).
 //@category RISCOS
 
 import java.io.*;
@@ -25,6 +26,7 @@ public class RiscOSPostAnalysis extends GhidraScript {
 		JsonObject j = JsonParser.parseReader(new FileReader(args[0])).getAsJsonObject();
 		File outDir = new File(args[1]);
 		outDir.mkdirs();
+		String baseName = args.length > 2 ? args[2] : "decompile";
 		Listing listing = currentProgram.getListing();
 		FunctionManager fm = currentProgram.getFunctionManager();
 
@@ -97,7 +99,7 @@ public class RiscOSPostAnalysis extends GhidraScript {
 		di.openProgram(currentProgram);
 		int nfun = 0, nok = 0, nwarn = 0;
 		Map<String, Integer> warnKinds = new TreeMap<>();
-		try (PrintWriter c = new PrintWriter(new File(outDir, "galdan.c"));
+		try (PrintWriter c = new PrintWriter(new File(outDir, baseName + ".c"));
 				PrintWriter idx = new PrintWriter(new File(outDir, "functions.tsv"))) {
 			idx.println("entry\tname\tbody_bytes\tcallers\tcallees\tparams\treturn\tstatus");
 			for (Function f : fm.getFunctions(true)) {

@@ -18,5 +18,5 @@ mkdir -p "$HERE/project" "$HERE/out/lemprog"
     -processor ARM:LE:32:v4 -cspec default \
     -scriptPath "$HERE/scripts" \
     -preScript ApplyRiscOSAnnotations.java "$HERE/lemprog.json" \
-    -postScript RiscOSPostAnalysis.java "$HERE/lemprog.json" "$HERE/out/lemprog" \
-    2>&1 | tee "$HERE/out/headless_lemprog.log" | grep -E 'INFO .*\.java>|ERROR|WARN.*Script|Exception'
+    -postScript RiscOSPostAnalysis.java "$HERE/lemprog.json" "$HERE/out/lemprog" lemmings \
+    2>&1 | tee "$HERE/out/lemprog/headless_lemprog.log" | grep -E 'INFO .*\.java>|ERROR|WARN.*Script|Exception'
