@@ -454,3 +454,22 @@ the other 15 palette-setting calls happen even later than we've run for,
 or there's a second piece to this (e.g. a bulk multi-colour variant, or
 the remaining colours are set once during a slower asset-decode step we
 haven't waited long enough for) - not yet confirmed either way.
+
+Found a second, real bug this way: reported (not yet reproduced by us -
+our own runs still show the same panel screen above) as a "scrambled"
+display, not the expected logo/menu. vduvar()/the OS_ReadModeVariable
+mv[] table were still galactic dan's inherited 320x256 *8bpp* constants
+(NColour=255, LineLength=320 bytes/row, ScreenSize=81920, XEig/YEig=1,
+bank stride &14000) - all wrong for Lemmings' actual 320x200 *4bpp* mode.
+Concretely, NColour (var 3) and ScrBRow/var 12 used to be the same
+inherited value (255) - true for galactic dan by coincidence (256 colours
+and 256-tall screen both give 255) but they diverge for Lemmings (15 vs
+199), so anything reading NColour to size a colour-lookup table would
+have been overrunning by 16x. Fixed all of these (see vduvar()/mv[]/the
+bank-stride constant in runtime.c) using values we could independently
+verify: XEig=YEig=2 is *confirmed*, not guessed, since it's the same /4
+factor the OS_Mouse scaling code (&2a834, used to find the start button)
+already proved. Not yet confirmed this fixes the reported scrambling
+specifically, since we can't reproduce it yet - most likely relevant to
+whatever real gameplay/scrolling rendering looks like, which our own
+testing hasn't reached (we've only gotten as far as the panel above).
