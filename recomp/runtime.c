@@ -151,17 +151,22 @@ static void vdu_put(uint8_t c)
 
 /* ---------------------------------------------------------------- dispatch */
 static void interp_step(void);
+static int trace_gaps;                  /* --trace-gaps: see below */
 
 /* Unlike galactic dan's runtime (which falls back to a full ARM2
  * interpreter for any address with no compiled entry, and only reports
- * coverage gaps at exit via RECOMP_ISTAT), we log and stop immediately: for
- * this project, finding out about a gap right when we hit it - not some
+ * coverage gaps at exit via RECOMP_ISTAT), the default here is to log and
+ * stop immediately: finding out about a gap right when we hit it - not some
  * arbitrary time later - is what drives what gets translated next. The
- * interpreter (exec_word/interp_step/interp_exec) is kept for the one case
- * that's a narrower, different concern: a self-modified instruction whose
- * *current* bit pattern wasn't one of the forms seen during analysis (see
- * gen_c.py's smc_switch) - the address itself is translated, just this one
- * word in it isn't, and interpreting a single instruction there is safe. */
+ * interpreter (exec_word/interp_step/interp_exec) is kept for two things:
+ * self-modified instructions whose *current* form wasn't one seen during
+ * analysis (gen_c.py's smc_switch), and, only with --trace-gaps, pushing
+ * through an untranslated *address* (as opposed to instruction form) too -
+ * a one-shot diagnostic mode for mapping out several gaps in a single run
+ * (e.g. addresses reached only via a computed/indirect jump, which have no
+ * static caller to point at) instead of rebuilding after each one. It logs
+ * every distinct gap address the first time it's hit, then keeps
+ * interpreting exactly like galactic dan's runtime always does. */
 static void log_untranslated_branch(uint32_t a)
 {
     FILE *f = fopen("untranslated.log", "a");
@@ -174,12 +179,25 @@ static void log_untranslated_branch(uint32_t a)
             a, (unsigned long long)icount, R[14]);
 }
 
+static int seen_gap(uint32_t a)
+{
+    static uint32_t seen[4096]; static int n;
+    for (int k = 0; k < n; k++) if (seen[k] == a) return 1;
+    if (n < 4096) seen[n++] = a;
+    return 0;
+}
+
 void call_addr(uint32_t a)
 {
     if (a == RETURN_TO_OS) finish("returned to OS");
     fn_t f = (!interp_only && a >= LOAD && a < img_end) ? entry_tab[(a - LOAD) >> 2] : 0;
     if (f) { f(a); return; }
     if (a == HANDLER_RET) return;
+    if (trace_gaps) {
+        if (!seen_gap(a)) log_untranslated_branch(a);
+        interp_step();
+        return;
+    }
     log_untranslated_branch(a);
     finish("branch to untranslated code");
 }
@@ -863,6 +881,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[k], "--headless")) ;
         else if (!strcmp(argv[k], "--full-os")) full_os = 1;
         else if (!strcmp(argv[k], "--no-title")) no_title = 1;
+        else if (!strcmp(argv[k], "--trace-gaps")) trace_gaps = 1;
         else if (!strcmp(argv[k], "--fullscreen")) fs = "";
         else if (!strcmp(argv[k], "--no-sound")) no_sound = 1;
         else if (!strncmp(argv[k], "--wav=", 6)) wavpath = argv[k] + 6;
