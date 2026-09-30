@@ -182,10 +182,34 @@ check on the whole codec-by-emulation approach as we could ask for.
 LemGrafix/LemLevels are NOT loaded by LemBoot at all - grepping strings out
 of the decompressed LemProg.bin turns up "LemGrafix.ArcGrn1P",
 "LemLevels.LEVEL000" etc. around file offset &2be00-&2bf40 (right near the
-end of LemProg's own data), so that loading (and presumably decompression)
-happens from inside LemProg itself, at runtime, per level - a separate,
-bigger investigation into LemProg's own decompile rather than another
-LemBoot call site.
+end of LemProg's own data). Found the actual loader by searching the whole
+binary for 4-byte words equal to each string's address (i.e. finding literal
+pool references rather than relying on spider/Ghidra to have already
+classified the caller as reached code - the calling function, around
+&27ad0-&27ca8, is genuinely valid code that spider's speculative pass
+missed, most likely because it's reached only via a jump table or function
+pointer we haven't found the source of yet). Each call site: loads r8 =
+string pointer via the same "bl to a fixed thunk, literal word follows"
+trick LemBoot uses (&8074 = load-into-r8 thunk, &8080 = load-into-sb
+thunk), patches 1-3 digit bytes into the string (level number / variant
+selection - LEVEL000's digits sit at string offsets &f-&11), sets sb = a
+fixed target address (LEVEL data -> &4773c/&4973c, ArcObj1P -> &6a83c,
+the ArcGrn/arcpan group -> &77b2c - all comfortably above LemProg's own
+&8000-&2bf40 code+data, i.e. these get their own permanent buffers rather
+than being chain-loaded over running code), then tail-jumps into a loader
+at &280e0 that is *the same OS_File-255-load template* LemBoot uses
+(&2811c builds "<Lem$Dir>.Lemmings.<name>", svc &20008 loads it) - but,
+unlike LemBoot's version, &280e0 does NOT call an unpacker afterward.
+That's a real finding, not just an oversight: LEVEL000's raw on-disc bytes
+don't look like the LZ-compressed streams we saw for LemProg/Krisalis/etc.
+(no long zero run, fairly uniform byte distribution) and 1332 bytes is
+in the right ballpark for the well-documented classic Lemmings binary
+level format (terrain pieces + object placements) stored directly. So the
+"P" suffix on the LemGrafix filenames most likely does NOT mean
+"LZ-packed" the way DMALOGO/PSYGNO/Krisalis were - more likely a planar/
+packed-pixel bitmap encoding specific to the graphics code, unrelated to
+LemBoot's unpacker. Reading LemProg's sprite-drawing code (not yet
+attempted) would confirm this either way.
 
 Status / next steps
 --------------------
@@ -209,14 +233,19 @@ Status / next steps
    spider.py/export_ghidra.py assume absolute load; will need adapting for
    the module header and for being entered via multiple SWI/vector entry
    points rather than one.
-5. NEXT: LemGrafix/*P and LemLevels/* are loaded from inside LemProg itself
-   at runtime (confirmed by strings in LemProg.bin - see above), not by
-   LemBoot. Finding and understanding that loader means reading LemProg's
-   own Ghidra decompile (ghidra/out/lemprog/galdan.c) around the functions
-   that reference those string table entries near file offset &2be00, then
-   very likely reusing the same emulate-the-real-loader trick (this time
-   driving LemProg.bin's own code in arm2.py rather than LemBoot's) to
-   pull out and decompress a sample level + its graphics.
+5. LemGrafix/*P and LemLevels/* loading: DONE for this stage - found the
+   loader (LemProg file offset &280e0, called via &27ad0-&27ca8; see above)
+   by searching the binary for literal-pool references to the string
+   addresses rather than relying on spider/Ghidra's reachability analysis,
+   since that code wasn't in the 205 already-decompiled functions. It's the
+   same OS_File-255 template as LemBoot's loader, but with no unpack call -
+   these assets most likely aren't LZ-compressed at all (see above).
+   NEXT: run tools/unpack_lemboot.py's technique against LemProg.bin itself
+   (driving arm2.py from its &280e0 entry, same OS_File SWI shim) to
+   actually load a level + its graphics into a file, then figure out the
+   binary level format (well documented for the classic Amiga/DOS version -
+   worth checking it matches) and the ArcGrn/ArcObj sprite encoding by
+   reading LemProg's sprite-drawing code.
 6. Only after LemProg (+ MemMod + musmod2) are disassembled and reassemble
    byte-identically (galactic dan's asm/ milestone) does static
    recompilation to C (recomp/, galactic dan's gen_c.py) become relevant.
