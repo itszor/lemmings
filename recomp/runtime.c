@@ -41,6 +41,7 @@ uint32_t R[16];
 uint32_t NF, ZF, CF, VF;
 uint8_t *MEM;
 uint32_t npc;
+uint32_t pc_bias;
 uint64_t icount, irq_next;
 const uint8_t *codemap;
 uint32_t img_end;
@@ -269,11 +270,33 @@ static void ev(const char *name, const char *fmt, ...)
     va_end(ap);
     fputc('\n', evlog);
 }
+/* Just enough of the VDU queue to follow VDU 22 (mode changes): LemBoot
+ * selects MODE 9 (320x256, 4bpp: 160 bytes/row) for the splash logos,
+ * where LemProg's screen is 640x256 - showing mode 9 memory at 640px wide
+ * draws each logo twice side by side at half height. */
+static int screen_mode = 12;
 static void vdu_put(uint8_t c)
 {
+    static const uint8_t nparams[32] = {0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                                        0,1,2,5,0,0,1,9,8,5,0,0,4,4,0,2};
+    static uint8_t q[10]; static int qn, qwant;
     if (nvdu < sizeof vdu) vdu[nvdu++] = c;
     if (full_os) vdu_write(c);
+    if (qwant) {
+        q[qn++] = c;
+        if (qn == qwant) {
+            if (q[0] == 22) screen_mode = q[1] & 0x7F;
+            qn = qwant = 0;
+        }
+    } else if (c < 32 && nparams[c]) {
+        q[0] = c; qn = 1; qwant = 1 + nparams[c];
+    }
 }
+/* boot_mode only for now: LemProg emits its own VDU 22,9 as well, and its
+ * raw screen memory really does render correctly as MODE 9 (see README) -
+ * but its vduvar()/bank layout still assumes 640x256 throughout, so
+ * switching its display over is a separate change. */
+static int screen_width(void) { return boot_mode && screen_mode == 9 ? 320 : 640; }
 
 /* ---------------------------------------------------------------- dispatch */
 static void interp_step(void);
@@ -324,7 +347,7 @@ void call_addr(uint32_t a)
      * address gets misrouted into LemBoot's real _start and loops
      * forever instead of ending the call. The generic "in_handler and
      * nothing resolves" catch-all below handles those cases instead. */
-    if (!in_handler && boot_mode && a >= 0x40000 && a < 0x40000 + (img_end_boot - LOAD)) {
+    if (boot_mode && a >= 0x40000 && a < 0x40000 + (img_end_boot - LOAD)) {
         /* LemBoot copies its first &2000 bytes from &8000 to &40000 and
          * continues running from there (see the loop at &8010-&802c) -
          * real hardware needs this so it can safely OS_File-load the next
@@ -335,7 +358,21 @@ void call_addr(uint32_t a)
          * never go stale when &8000 gets overwritten - we can just keep
          * dispatching to the original (&8000-based) compiled function for
          * any jump into the relocated copy, sidestepping the relocation
-         * trick entirely. */
+         * trick entirely.
+         *
+         * Dispatch only, though: from here on the *program* really is
+         * running at &40000, and everything it can observe about its own
+         * PC must say so - PC-relative data (flags, palette tables, the
+         * saved &100 chain), literal-thunk reads via R14, link addresses.
+         * LemBoot is translated with --pcbias, so all of that is emitted
+         * relative to pc_bias; set it here. Without this the program's
+         * absolute pointers (e.g. the &407c8 literal at &8a2c, the &40744/
+         * &406c4 palette tables) and its PC-relative accesses to the same
+         * variables (&87c8 etc.) disagree, and the PC-relative side reads
+         * the low copy, which the next asset load overwrites anyway. This
+         * also applies inside call_hw_handler(): &880c is the relocated
+         * handler too. */
+        pc_bias = 0x38000;
         a -= 0x38000;
         npc = a;
     }
@@ -352,7 +389,7 @@ void call_addr(uint32_t a)
     }
     if (boot_mode && boot_loaded_lemprog && a == LOAD) {
         entry_tab = entry_tab_game; codemap = codemap_game; img_end = img_end_game;
-        boot_mode = 0; boot_loaded_lemprog = 0;
+        boot_mode = 0; boot_loaded_lemprog = 0; pc_bias = 0;
         fprintf(stderr, "chain-load: LemBoot -> LemProg at icount %llu\n", (unsigned long long)icount);
     }
     fn_t f = (!interp_only && a >= LOAD && a < img_end) ? entry_tab[(a - LOAD) >> 2] : 0;
@@ -478,12 +515,12 @@ static void rt_service(int vsync_now)
         if (screenshot_requested) {
             char fn[64];
             snprintf(fn, sizeof fn, "screenshot-%d.bmp", ++shots);
-            display_screenshot(displayed(), 640, fn);
+            display_screenshot(displayed(), screen_width(), fn);
             fprintf(stderr, "saved %s\n", fn);
             screenshot_requested = 0;
         }
         if (quit_requested) finish("window closed");
-        display_present(displayed(), 640);
+        display_present(displayed(), screen_width());
         monotonic += 2;
         if (!boot_mode) {
             call_hw_handler(0x852c, 0x8, 0);   /* IOC14 bit3: build the palette table (F_8618 chain) */
@@ -491,17 +528,14 @@ static void rt_service(int vsync_now)
         } else {
             /* LemBoot's own analogue, installed at &100 the same way - see
              * &87d0-&8804. Never actually invoked by anything else, same
-             * as LemProg's &852c before this fix. Its own build step
-             * (&8884) gates on &87c4/&87c8 being nonzero - unlike
-             * LemProg's equivalent gates, these start at zero in the
-             * static image and nothing ever sets them (same two
-             * addresses as the generic hardware-completion busy-wait
-             * below, just never kicked for real on this path), so the
-             * build never ran even with that busy-wait fixed. Kick them
-             * ourselves right before calling, so &8884 sees "pending
-             * work" once per vsync; the existing clear below consumes it
-             * afterwards, same as real hardware would. */
-            WR32(0x87c4, 1); WR32(0x87c8, 1);
+             * as LemProg's &852c before this fix. Its &87c4/&87c8 gates
+             * are fade-in/fade-out requests: LemBoot sets one to &ff
+             * (e.g. via the &407c8 literal at &8a2c) and busy-waits;
+             * &88bc/&8914 step the fade each call and clear the flag
+             * themselves once it's complete. (These used to be faked
+             * here - kicked to 1 before, cleared each vsync - only
+             * because the PC-relative and absolute views of them didn't
+             * agree before pc_bias; see call_addr().) */
             call_hw_handler(0x880c, 0x8, 0);
             call_hw_handler(0x880c, 0x40, 0);
         }
@@ -516,13 +550,6 @@ static void rt_service(int vsync_now)
          * most one vsync period for any busy-wait), same spirit as the
          * &2a5b0 tick-counter fix. */
         WR32(0x84e8, 0); WR32(0x84ec, 0);
-        /* LemBoot's own analogous hardware-completion pair (&87c4/&87c8,
-         * checked by the same "kick to &ff, wait for hardware to clear it"
-         * idiom as &84e8/&84ec above, just LemBoot-specific addresses -
-         * found at &8a30/&886c during --boot bring-up). Same bounded-clear
-         * fix; guarded to boot_mode since these addresses are meaningless
-         * (ordinary LemProg memory) once LemProg is running. */
-        if (boot_mode) { WR32(0x87c4, 0); WR32(0x87c8, 0); }
         uint32_t r[2] = {4, 0};
         call_vector(0x10, 2, r);
         if (mouse_buttons != last_buttons) {
@@ -560,7 +587,10 @@ void irq_point(void)
         monotonic += 2;
         if (!boot_mode) WR32(0x2a5b0, RD32(0x2a5b0) + 1);  /* see README: vsync tick counter (LemProg-specific address) */
         WR32(0x84e8, 0); WR32(0x84ec, 0);  /* see rt_service(): bounded hw-completion clear */
-        if (boot_mode) { WR32(0x87c4, 0); WR32(0x87c8, 0); }  /* see rt_service(): LemBoot's own pair */
+        if (boot_mode) {                   /* see rt_service(): LemBoot's fades only finish via &880c */
+            call_hw_handler(0x880c, 0x8, 0);
+            call_hw_handler(0x880c, 0x40, 0);
+        }
         uint32_t r[2] = {4, 0};
         call_vector(0x10, 2, r);
     }

@@ -9,7 +9,10 @@ points and self-modification sites all come from the earlier analysis
 (ghidra/gen_asm.py + <name>.json + the spider pickle).
 
 Usage: gen_c.py [--img=path] [--json=path] [--tsvdir=path] [--dyn=path,...]
-                [--loops] [--files=N]
+                [--loops] [--files=N] [--prefix=F] [--tabprefix=recomp]
+                [--pcbias] [--out=dir]
+    --pcbias: emit PC-derived values relative to the runtime's pc_bias
+    (for an image that relocates itself and runs from the copy - LemBoot).
     Defaults target LemProg (extracted_decompressed/LemProg.bin,
     ghidra/lemprog.json, ghidra/out/lemprog).
 """
@@ -93,7 +96,9 @@ def load_analysis(img_path, json_path, tsvdir, dyn):
 
 
 class Recomp:
-    def __init__(self, img_path, json_path, tsvdir, dyn=(), loops=False, prefix='F', tabprefix='recomp'):
+    def __init__(self, img_path, json_path, tsvdir, dyn=(), loops=False, prefix='F', tabprefix='recomp',
+                 pcbias=False):
+        self.pcbias = pcbias              # see pc() below
         self.prefix = prefix              # function symbol prefix (F_xxxx); lets two
         self.tabprefix = tabprefix        # translated images (e.g. LemBoot + LemProg,
                                            # both loaded at &8000) coexist in one binary
@@ -247,11 +252,20 @@ class Recomp:
         return plans
 
     # ---------------------------------------------------------------- operands
-    @staticmethod
-    def regv(n, a, pcoff, full):
+    def pc(self, v):
+        """A PC-derived value (PC as an operand, a link address, a jump
+        target). With --pcbias the image may really be running from a copy
+        of itself somewhere else (LemBoot relocates to &40000 and runs from
+        there), so everything the program can *observe* about its own PC -
+        and so every PC-relative data access - is offset by the runtime's
+        pc_bias. Function entry/dispatch still uses the unbiased address;
+        call_addr() maps biased targets back."""
+        return '(%s + pc_bias)' % h(v) if self.pcbias else h(v)
+
+    def regv(self, n, a, pcoff, full):
         if n == 15:
             p = (a + pcoff) & 0x3FFFFFC
-            return '(%s | PSR())' % h(p) if full else h(p)
+            return '(%s | PSR())' % self.pc(p) if full else self.pc(p)
         return 'R[%d]' % n
 
     def op2(self, a, w):
@@ -285,19 +299,19 @@ class Recomp:
     # ---------------------------------------------------------------- control flow
     def call_code(self, t, ret):
         if t in self.code and t in self.leaders:
-            return 'CALL(%s_%x, %s, %s);' % (self.prefix, self.owner[t], h(t), h(ret))
-        return 'npc = %s; CALLI(%s);' % (h(t), h(ret))
+            return 'CALL(%s_%x, %s, %s);' % (self.prefix, self.owner[t], h(t), self.pc(ret))
+        return 'npc = %s; CALLI(%s);' % (self.pc(t), self.pc(ret))
 
     def jump_code(self, fn, t):
         if t in self.code and self.owner.get(t) == fn and t in self.leaders:
             return 'goto L_%x;' % t
-        return 'JUMP(%s);' % h(t)
+        return 'JUMP(%s);' % self.pc(t)
 
     def after_pc_write(self, fn, a):
         """npc has been set by an instruction at a (not a branch)."""
         ov = self.overrides.get(a)
         if ov == 'CALL':
-            return 'CALLI(%s);' % h(a + 4)
+            return 'CALLI(%s);' % self.pc(a + 4)
         if a in self.duff:
             return self.duff_dispatch(fn, a)
         return 'LEAVE();'
@@ -306,7 +320,7 @@ class Recomp:
         if a in self.duffloops:
             d = self.duffloops[a]
             self.stats['duffloop'] += 1
-            out = '{ uint32_t _t = npc; '
+            out = '{ uint32_t _t = npc%s; ' % (' - pc_bias' if self.pcbias else '')
             if d['prefix'] is not None:
                 out += 'if (_t == %s) goto L_%x; ' % (h(d['prefix']), d['prefix'])
             out += ('if (_t >= %s && _t <= %s && (%s - _t) %% %d == 0) { _dn = (%s - _t) / %d; goto D_%x; } '
@@ -315,8 +329,8 @@ class Recomp:
             return out
         ents = [e for e in self.duff[a] if self.owner.get(e) == fn and e in self.leaders]
         self.stats['duff'] += 1
-        return 'switch (npc) { %s default: LEAVE(); }' % ' '.join(
-            'case %s: goto L_%x;' % (h(e), e) for e in ents)
+        return 'switch (npc%s) { %s default: LEAVE(); }' % (' - pc_bias' if self.pcbias else '', ' '.join(
+            'case %s: goto L_%x;' % (h(e), e) for e in ents))
 
     # ---------------------------------------------------------------- translation
     def translate(self, fn, a, w):
@@ -334,7 +348,7 @@ class Recomp:
         if t in (0, 1) and (w & 0x0FC000F0) == 0x90:
             return self.mul(a, w)
         if t in (0, 1) and (w & 0x0FB00FF0) == 0x01000090:
-            return ['interp_exec(%s, %s);' % (h(a), h(w))]  # SWP (rare)
+            return ['interp_exec(%s, %s);' % (self.pc(a), h(w))]  # SWP (rare)
         if t in (0, 1):
             return self.dataproc(fn, a, w)
         if t in (2, 3):
@@ -349,13 +363,13 @@ class Recomp:
                 # R[14] is always call site + 4 (real ARM semantics; the
                 # literal-thunk idiom itself depends on this) - only the
                 # *expected return site* for the CALL() macro differs.
-                return ['R[14] = %s | PSR();' % h(a + 4), self.call_code(tgt, self.call_return_site(a, w, tgt))]
+                return ['R[14] = %s | PSR();' % self.pc(a + 4), self.call_code(tgt, self.call_return_site(a, w, tgt))]
             if self.overrides.get(a) == 'CALL':
                 return [self.call_code(tgt, a + 4)]
             return [self.jump_code(fn, tgt)]
         if t == 7 and (w >> 24) & 1:
             n = w & 0xFFFFFF
-            out = ['SWI(%s, %s);' % (h(n), h(a + 4))]
+            out = ['SWI(%s, %s);' % (h(n), self.pc(a + 4))]
             if (n & ~0x20000) == 1 and a in self.fallthrough:
                 out.append(self.jump_code(fn, self.fallthrough[a]))
             return out
@@ -414,7 +428,7 @@ class Recomp:
                 return ['LDRPC_(%s, %s, %d, %d, %d);' % (base, off, p, u, wb),
                         self.after_pc_write(fn, a)]
             return ['LDR_(%d, %s, %s, %d, %d, %d, %d);' % (rd, base, off, p, u, bb, wb)]
-        val = '(%s | PSR())' % h(a + 12) if rd == 15 else 'R[%d]' % rd
+        val = '(%s | PSR())' % self.pc(a + 12) if rd == 15 else 'R[%d]' % rd
         return ['STR_(%s, %s, %s, %d, %d, %d, %d);' % (val, base, off, p, u, bb, wb)]
 
     def ldmstm(self, fn, a, w):
@@ -422,7 +436,7 @@ class Recomp:
         rn = (w >> 16) & 15
         regs = [k for k in range(16) if w & (1 << k)]
         n = len(regs)
-        base = 'R[%d]' % rn if rn != 15 else h(a + 8)
+        base = 'R[%d]' % rn if rn != 15 else self.pc(a + 8)
         if u:
             start = '%s + %d' % (base, 4 if p else 0)
             wbv = '%s + %d' % (base, 4 * n)
@@ -440,7 +454,7 @@ class Recomp:
             return out
         parts = ['STM_BEGIN(%s)' % start]
         for k in regs:
-            parts.append('STM_V(%s)' % ('(%s | PSR())' % h(a + 12) if k == 15 else 'R[%d]' % k))
+            parts.append('STM_V(%s)' % ('(%s | PSR())' % self.pc(a + 12) if k == 15 else 'R[%d]' % k))
         return [' '.join(parts) + ' %sXFER_END;' % wbs]
 
     # ---------------------------------------------------------------- emission
@@ -483,7 +497,7 @@ class Recomp:
                     out += ['    ' + l for l in self.translate(fn, w_end, self.word(w_end))]
                     self.stats['insns'] += 1
                     if w_end + 4 not in own:
-                        out.append('    JUMP(%s);' % h(w_end + 4))
+                        out.append('    JUMP(%s);' % self.pc(w_end + 4))
                     skip_to = w_end + 4
                 continue
             if x in self.leaders:
@@ -497,20 +511,20 @@ class Recomp:
                 out += ['    ' + l for l in self.translate(fn, x, w)]
             nxt = self.natural_next(x, w)
             if nxt not in own:
-                out.append('    JUMP(%s);' % h(nxt))        # falls out of this function
+                out.append('    JUMP(%s);' % self.pc(nxt))        # falls out of this function
         out.append('}')
         return out
 
     def smc_switch(self, fn, a, w):
         self.stats['smc'] += 1
         forms = [w] + [v for v in self.smc[a] if v != w]
-        out = ['switch (*(uint32_t *)(MEM + %s)) {' % h(a)]
+        out = ['switch (*(uint32_t *)(MEM + %s)) {' % self.pc(a)]
         for v in forms:
             out.append('case %s:' % h(v))
             out += ['    ' + l for l in self.translate(fn, a, v)]
             out.append('    break;')
         out.append('default:   /* instruction form not seen during analysis */')
-        out.append('    if (interp_exec(%s, *(uint32_t *)(MEM + %s))) LEAVE();' % (h(a), h(a)))
+        out.append('    if (interp_exec(%s, *(uint32_t *)(MEM + %s))) LEAVE();' % (self.pc(a), self.pc(a)))
         out.append('}')
         return out
 
@@ -558,7 +572,8 @@ def main():
     tsvdir = opts.get('tsvdir', os.path.join(GH, 'out', 'lemprog'))
     dyn = [d for d in opts.get('dyn', '').split(',') if d]
     r = Recomp(img_path, json_path, tsvdir, dyn, loops='loops' in opts,
-               prefix=opts.get('prefix', 'F'), tabprefix=opts.get('tabprefix', 'recomp'))
+               prefix=opts.get('prefix', 'F'), tabprefix=opts.get('tabprefix', 'recomp'),
+               pcbias='pcbias' in opts)
     out = opts.get('out', os.path.join(HERE, 'gen'))
     os.makedirs(out, exist_ok=True)
     r.write(out, int(opts.get('files', 16)))

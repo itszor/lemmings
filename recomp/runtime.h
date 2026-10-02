@@ -21,6 +21,7 @@ extern uint32_t R[16];
 extern uint32_t NF, ZF, CF, VF;
 extern uint8_t *MEM;
 extern uint32_t npc;
+extern uint32_t pc_bias;                /* where the running image really is, minus where it was translated (LemBoot: see call_addr) */
 extern uint64_t icount, irq_next;
 extern const uint8_t *codemap;          /* 1 bit per word of the image: compiled code */
 extern uint32_t img_end;

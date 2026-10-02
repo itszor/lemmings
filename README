@@ -1134,3 +1134,51 @@ LemBoot side: B_88bc (the "build table" step, called when &87c8 is set)
 is the next thing to trace - find what it's supposed to read the
 Krisalis-logo colours from, and why that source is empty. This is now
 the concrete next step, not a timing issue.
+
+FIXED - the splash logos now display (Krisalis, Psygnosis, DMA Design, each
+with its real fade in/out), and the "all-zero palette" above was never a
+missing-data problem. Root cause: LemBoot relocates itself to &40000 and
+*runs from there*, but our translated code computed every PC-derived value
+against the original &8000 copy. call_addr()'s remap only fixed up
+*dispatch*. Everything the program could observe about its own PC was still
+wrong: PC-relative loads/stores, literal-thunk reads through R14, link
+addresses. Meanwhile its absolute pointers (the &407c8 literal at &8a2c,
+the &40744 target / &406c4 current palette tables at &8a14/&8a18/&86bc)
+pointed at the relocated copy. So the &8a30 "start fade" store went to
+&407c8 while &880c's gate read &87c8. The fade code read and wrote the low
+copy, and the next asset load (at &8000) then overwrote it. "Nothing ever
+sets &87c4/&87c8" was this split, not a missing writer.
+
+Fix: gen_c.py --pcbias (used for LemBoot only, see Makefile `regen`) emits
+every PC-derived value as `(addr + pc_bias)`. Function entry/dispatch stays
+unbiased; Duff/SMC switches subtract the bias back. call_addr() sets
+pc_bias = &38000 when it remaps a jump into the relocated copy, now also
+inside call_hw_handler(), since &880c is the relocated handler too. It
+resets pc_bias to 0 at chain-load. LemProg's generated code is
+byte-identical (no --pcbias).
+
+With the addressing consistent, &87c4/&87c8 behave as the code says. They
+are fade-in/fade-out requests: LemBoot sets one to &ff and busy-waits at
+&886c, and &88bc/&8914 step the fade once per call and clear the flag
+themselves when it's done. Removed the fake kick-to-1 and the per-vsync
+clears, which would cut every fade short. Headless (--limit) runs now also
+call &880c on their synthetic vsync (boot_mode only). Before, only the
+interactive path did, and the fake clear was what let headless runs
+progress.
+
+Second, display-side fix: LemBoot (and LemProg - see below) emits VDU 22,9,
+selecting MODE 9 (320x256, 4bpp, 160 bytes/row), *after* !Run's 22,12.
+Showing it as 640 wide drew each logo twice side by side at half height.
+vdu_put() now tracks VDU 22 through a minimal VDU parameter-queue table,
+and the display uses 320 wide in mode 9 - currently boot_mode only.
+
+NEXT - LemProg's screen mode looks wrong too: LemProg emits its own
+`VDU 12, 22, 9` (seen in recomp.vdu from a plain, non---boot run). I
+rendered recomp.screen from such a run at 320 wide / 160-byte stride, with
+bank 1 at +&A000. It shows a clean, correctly proportioned Lemmings title
+menu ("Archimedes version by ..."). So the "MODE 12, &14000 per bank"
+conclusion above looks wrong. &14000 is more likely *two* mode-9 banks of
+&A000 each, which still fits MemMod's resize and the zero-fill loop. I
+haven't switched LemProg over yet: vduvar() (148/149/150/LineLength/
+XEig...), displayed()'s bank stride and OS_Byte 112/113 all assume 640x256.
+That needs its own careful change and check.

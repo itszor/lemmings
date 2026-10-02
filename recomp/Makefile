@@ -32,7 +32,7 @@ regen:
 	python3 gen_c.py
 	python3 gen_c.py --img=../extracted/\!LEMMINGS/LemBoot,fffff843-00000000 \
 	    --json=../ghidra/lemboot.json --tsvdir=../ghidra/out/lemboot \
-	    --prefix=B --tabprefix=recompB --out=genboot --files=2
+	    --prefix=B --tabprefix=recompB --pcbias --out=genboot --files=2
 
 clean:
 	rm -f gen/*.o genboot/*.o runtime.o vdu.o display.o sound.o lemmings
