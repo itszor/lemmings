@@ -147,12 +147,10 @@ void dbg_hook(uint32_t a)
  * (was &83e0-&8468, the spec_852c tables - that investigation is done). */
 void watch_write(uint32_t addr, uint32_t val)
 {
-    /* TEMP: watching &8a20, LemBoot's OS_File destination-address slot
-     * fed to sub_8af0 via R9 - see README, "find what calls &8b6c" thread. */
-    if (addr == 0x8a20) {
-        fprintf(stderr, "watch8a20: pc=%08x wrote %08x -> [8a20] (icount %llu)\n",
-                g_cur_pc, val, (unsigned long long)icount);
-    }
+    /* TEMP: hook for watching writes; currently unused (last used to
+     * confirm LemProg never programs MEMC directly - it flips screen
+     * banks via OS_Word 22 instead). */
+    (void)addr; (void)val;
 }
 static void dump_pchist(void)
 {
@@ -212,7 +210,7 @@ static void call_hw_handler(uint32_t addr, uint32_t ioc14, uint32_t ioc24)
     npc = snpc;
 }
 
-uint32_t os_write_bank_addr(void) { return SCREEN + bank * 0x14000; }
+uint32_t os_write_bank_addr(void) { return SCREEN + bank * 0xA000; }
 uint32_t os_screen_base(void) { return SCREEN; }
 
 /* Direct VIDC register writes (physical &3400000): LemProg bypasses the OS
@@ -270,10 +268,10 @@ static void ev(const char *name, const char *fmt, ...)
     va_end(ap);
     fputc('\n', evlog);
 }
-/* Just enough of the VDU queue to follow VDU 22 (mode changes): LemBoot
- * selects MODE 9 (320x256, 4bpp: 160 bytes/row) for the splash logos,
- * where LemProg's screen is 640x256 - showing mode 9 memory at 640px wide
- * draws each logo twice side by side at half height. */
+/* Just enough of the VDU queue to follow VDU 22 (mode changes): !Run
+ * selects MODE 12, then LemBoot and LemProg each select MODE 9 (320x256,
+ * 4bpp: 160 bytes/row) - showing mode 9 memory at 640px wide draws every
+ * image twice side by side at half height. */
 static int screen_mode = 12;
 static void vdu_put(uint8_t c)
 {
@@ -292,11 +290,7 @@ static void vdu_put(uint8_t c)
         q[0] = c; qn = 1; qwant = 1 + nparams[c];
     }
 }
-/* boot_mode only for now: LemProg emits its own VDU 22,9 as well, and its
- * raw screen memory really does render correctly as MODE 9 (see README) -
- * but its vduvar()/bank layout still assumes 640x256 throughout, so
- * switching its display over is a separate change. */
-static int screen_width(void) { return boot_mode && screen_mode == 9 ? 320 : 640; }
+static int screen_width(void) { return screen_mode == 9 ? 320 : 640; }
 
 /* ---------------------------------------------------------------- dispatch */
 static void interp_step(void);
@@ -472,9 +466,12 @@ static void call_vector(unsigned vec, int nregs, const uint32_t *regs)
     npc = snpc;
 }
 
+/* OS_Word 22's display-hardware offset (block type bit 1): how LemProg
+ * flips between its two screen banks (offsets 0 and &A000). */
+static uint32_t display_off;
 static const uint8_t *displayed(void)
 {
-    return MEM + SCREEN + display_bank * 0x14000;
+    return MEM + SCREEN + display_off + display_bank * 0xA000;
 }
 
 /* Run a loader-stage program (e.g. !TitlePic) with the interpreter before
@@ -539,17 +536,12 @@ static void rt_service(int vsync_now)
             call_hw_handler(0x880c, 0x8, 0);
             call_hw_handler(0x880c, 0x40, 0);
         }
-        /* &84e8/&84ec: a generic hardware-completion pair, set to &ff by
-         * "kick" sites and polled by busy-waits all over the code (see
-         * README) - but also read as a plain nonzero/zero "pending work"
-         * flag by F_8618's gate checks just above (call_hw_handler's build
-         * path). Previously treated as a no-op write to unblock the
-         * busy-waits, which also silently broke the flag for every reader
-         * like F_8618 that actually needs to see it go nonzero. Instead:
-         * let writes land for real, and clear them here (bounded to at
-         * most one vsync period for any busy-wait), same spirit as the
-         * &2a5b0 tick-counter fix. */
-        WR32(0x84e8, 0); WR32(0x84ec, 0);
+        /* &84e8/&84ec are LemProg's fade-in/fade-out requests (the exact
+         * analogue of LemBoot's &87c4/&87c8): set to &ff by the game, which
+         * then busy-waits; &8650/&86ac step the fade once per &852c call
+         * and clear the flag themselves when it's complete. They used to
+         * be cleared here every vsync, which cut every fade off after one
+         * step - hence the dim, 3-register palette in the README. */
         uint32_t r[2] = {4, 0};
         call_vector(0x10, 2, r);
         if (mouse_buttons != last_buttons) {
@@ -586,11 +578,10 @@ void irq_point(void)
         next_vsync += VSYNC_STEPS;
         monotonic += 2;
         if (!boot_mode) WR32(0x2a5b0, RD32(0x2a5b0) + 1);  /* see README: vsync tick counter (LemProg-specific address) */
-        WR32(0x84e8, 0); WR32(0x84ec, 0);  /* see rt_service(): bounded hw-completion clear */
-        if (boot_mode) {                   /* see rt_service(): LemBoot's fades only finish via &880c */
-            call_hw_handler(0x880c, 0x8, 0);
-            call_hw_handler(0x880c, 0x40, 0);
-        }
+        /* see rt_service(): fades only progress (and finish) via the handler */
+        uint32_t hw = boot_mode ? 0x880c : 0x852c;
+        call_hw_handler(hw, 0x8, 0);
+        call_hw_handler(hw, 0x40, 0);
         uint32_t r[2] = {4, 0};
         call_vector(0x10, 2, r);
     }
@@ -669,26 +660,24 @@ static long load_file(const char *path, uint32_t addr)
 
 static uint32_t vduvar(uint32_t v)
 {
-    /* Lemmings values: RISC OS MODE 12 (640x256, 4bpp/16-colour) - see
-     * README. The !Run Obey file does `echo <22> <12>` (raw VDU 22,12 =
-     * "select screen MODE 12") before LemBoot even starts, which is the
-     * real, directly-confirmed mode - NOT the previously assumed 320x200
-     * (that was an unverified inference from the game's own /4 mouse-
-     * coordinate scaling, which doesn't actually have to match the real
-     * hardware Eig factors). 640*256*4bpp/8 = &14000 bytes/bank, which
-     * independently matches both the screen zero-fill loop's size in
-     * LemProg's init and MemMod's dynamic-area-2 resize target - see
-     * README for the full cross-check. */
+    /* Lemmings values: RISC OS MODE 9 (320x256, 4bpp/16-colour, 160
+     * bytes/row, &A000 per screen). !Run selects MODE 12 first, but both
+     * LemBoot and LemProg then emit VDU 22,9 themselves, and LemProg's
+     * double-buffering flips OS_Word 22's display offset between 0 and
+     * &A000 - see README. The &14000 seen in the screen zero-fill loop and
+     * MemMod's dynamic-area resize is the *total* screen memory: two
+     * mode-9 banks. */
     switch (v) {
-    case 148: return SCREEN + bank * 0x14000;
-    case 149: return SCREEN + (full_os ? display_bank : bank) * 0x14000;
-    case 150: case 7: return 0x14000;          /* ScreenSize: 640*256/2 (4bpp) */
-    case 1: case 11: return 639;               /* ScrRCol / width - 1 */
+    case 148: return SCREEN + bank * 0xA000;
+    case 149: return SCREEN + (full_os ? display_bank : bank) * 0xA000;
+    case 150: return 0x14000;                  /* TotalScreenSize: two banks */
+    case 7: return 0xA000;                     /* ScreenSize: 320*256/2 (4bpp) */
+    case 1: case 11: return 319;               /* ScrRCol / width - 1 */
     case 2: case 12: return 255;               /* ScrBRow / height - 1 */
     case 3: return 15;                         /* NColour - 1 (16 colours) */
-    case 4: return 1;                          /* XEig: MODE 12 is 640px wide */
-    case 5: return 2;                          /* YEig: MODE 12 is 256px tall */
-    case 6: return 320;                        /* LineLength: 640px * 4bpp / 8 */
+    case 4: return 2;                          /* XEig: MODE 9 is 320px wide */
+    case 5: return 2;                          /* YEig: 256px tall */
+    case 6: return 160;                        /* LineLength: 320px * 4bpp / 8 */
     case 9: return 2;                          /* Log2BPP: log2(4bpp) */
     default: return 0;
     }
@@ -875,6 +864,8 @@ void swi(uint32_t n, uint32_t nextpc)
             fprintf(stderr, "palette: colour %u = #%06x (icount %llu)\n",
                     colour, vidc_palette[colour], (unsigned long long)icount);
         }
+        if (R[0] == 22 && (blk[0] & 2))                     /* OS_Word 22: set display start */
+            display_off = (blk[1] | blk[2] << 8 | blk[3] << 16 | (uint32_t)blk[4] << 24) & 0xFFFFF;
         if (R[0] == 21 && blk[0] == 0)
             ev("OS_Word", "isi", R[0], blk, 6, blk[6] | blk[7] << 8 | blk[8] << 16 | (uint32_t)blk[9] << 24);
         else ev("OS_Word", "is", R[0], blk, 8);
@@ -911,7 +902,7 @@ void swi(uint32_t n, uint32_t nextpc)
         /* OS_ReadModeVariable, indices 0-12: ModeFlags, ScrRCol, ScrBRow,
          * NColour, XEig, YEig, LineLength, ScreenSize, YShadowSize, Log2BPP,
          * ?, ScrRCol(dup), ScrBRow(dup). Lemmings values - see vduvar(). */
-        static const uint32_t mv[13] = {0, 639, 255, 15, 1, 2, 320, 0x14000, 0, 2, 0, 639, 255};
+        static const uint32_t mv[13] = {0, 319, 255, 15, 2, 2, 160, 0xA000, 0, 2, 0, 319, 255};
         R[2] = R[1] < 13 ? mv[R[1]] : 0;
         return;
     }

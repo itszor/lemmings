@@ -1172,13 +1172,36 @@ Showing it as 640 wide drew each logo twice side by side at half height.
 vdu_put() now tracks VDU 22 through a minimal VDU parameter-queue table,
 and the display uses 320 wide in mode 9 - currently boot_mode only.
 
-NEXT - LemProg's screen mode looks wrong too: LemProg emits its own
-`VDU 12, 22, 9` (seen in recomp.vdu from a plain, non---boot run). I
-rendered recomp.screen from such a run at 320 wide / 160-byte stride, with
-bank 1 at +&A000. It shows a clean, correctly proportioned Lemmings title
-menu ("Archimedes version by ..."). So the "MODE 12, &14000 per bank"
-conclusion above looks wrong. &14000 is more likely *two* mode-9 banks of
-&A000 each, which still fits MemMod's resize and the zero-fill loop. I
-haven't switched LemProg over yet: vduvar() (148/149/150/LineLength/
-XEig...), displayed()'s bank stride and OS_Byte 112/113 all assume 640x256.
-That needs its own careful change and check.
+LemProg's screen mode was wrong too - now FIXED, along with its palette.
+The game now starts properly: the title menu shows in full colour (with
+the scrolling credits), START leads to the "Level 1 - Just dig!" briefing,
+and a further click goes into a playable level. Lemmings fall from the
+trapdoor and walk, and the OUT counter, timer and skill panel all work.
+Two fixes:
+
+  - Palette: &84e8/&84ec are LemProg's fade-in/fade-out requests, the
+    exact analogue of LemBoot's &87c4/&87c8. &852c (F_8618 -> &8650 fade
+    out / &86ac fade in) steps the fade once per call and clears the flag
+    itself when it's done. The "bounded hw-completion clear" every vsync
+    (see above) cut every fade off after one step, which is why only 3
+    dim registers ever appeared. Removed it. Headless runs now call &852c
+    on their synthetic vsync too, which is what lets the game's
+    fade-waits finish without the clear.
+  - Screen: LemProg emits its own `VDU 12, 22, 9`, so it runs in MODE 9
+    (320x256, 4bpp, 160 bytes/row, &A000 per bank) - the "MODE 12" above
+    only describes !Run. The &14000 seen in the zero-fill loop and in
+    MemMod is the *total* screen memory: two mode-9 banks. LemProg reads
+    only VDU variable 149, doesn't touch MEMC, and doesn't use OS_Byte
+    112/113. It flips banks with OS_Word 22 (write screen base offset:
+    0 / &A000, visible in recomp.events as "OS_Word 16"), which the
+    runtime used to ignore. The runtime now honours OS_Word 22's display
+    offset in displayed(). vduvar()/OS_ReadModeVariable report mode-9
+    values (TotalScreenSize stays &14000), and the 320-wide display (VDU
+    22 tracking) applies to LemProg too, not just boot_mode.
+
+Known approximation: &852c's bit-6 path pushes a second palette (table
+pointer at &83e4, versus &83e0 for the flyback push), timed by IOC timer 1
+for a mid-screen split (the panel). We call both paths once per frame and
+show the whole frame with whichever palette was pushed last. The title and
+level screens look right so far, but a real per-scanline split isn't
+emulated.
