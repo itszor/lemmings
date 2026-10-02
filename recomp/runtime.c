@@ -146,15 +146,11 @@ void dbg_hook(uint32_t a)
  * (was &83e0-&8468, the spec_852c tables - that investigation is done). */
 void watch_write(uint32_t addr, uint32_t val)
 {
-    static uint32_t seen_pc[64]; static int n;
-    uint32_t lo = SCREEN, hi = SCREEN + 3 * 0x14000;
-    if (addr >= lo && addr < hi) {
-        for (int k = 0; k < n; k++) if (seen_pc[k] == g_cur_pc) return;
-        if (n < 64) {
-            seen_pc[n++] = g_cur_pc;
-            fprintf(stderr, "watch: pc=%08x wrote %08x -> [%08x] (icount %llu)\n",
-                    g_cur_pc, val, addr, (unsigned long long)icount);
-        }
+    /* TEMP: watching &8a20, LemBoot's OS_File destination-address slot
+     * fed to sub_8af0 via R9 - see README, "find what calls &8b6c" thread. */
+    if (addr == 0x8a20) {
+        fprintf(stderr, "watch8a20: pc=%08x wrote %08x -> [8a20] (icount %llu)\n",
+                g_cur_pc, val, (unsigned long long)icount);
     }
 }
 static void dump_pchist(void)

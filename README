@@ -1080,10 +1080,28 @@ directly - prefix lives at &8b94, filename destination at &8ba7, exactly
 19 bytes in, matching the prefix's length), returning R1 pointing at the
 complete path for an X-flagged (error-checking) OS_File call right after
 (&8b4c, with an explicit `bvs retry` loop - the game's own code already
-expects this call can fail). Hit intermittently (real-timing-dependent,
-same category as earlier interactive-mode nondeterminism in this file):
-sometimes the OS_File fires before the filename's been copied in,
-leaving the unmodified "...Lemmings." template with no file to find.
+expects this call can fail).
+
+Follow-up (answering "find what calls &8b6c before &8b4c fires"):
+checked the disassembly directly rather than assuming a race. &8b6c has
+exactly one caller, at &8b48 - a plain `BL`, immediately followed by the
+`SWI &20008` at &8b4c/&8b50. &8b6c itself does the filename copy
+synchronously (a simple byte-copy loop, no SWI calls, no yielding) and
+returns straight back via `MOV PC,R14`. So this is NOT two independently-
+timed paths racing each other - it's one straight-line call sequence,
+and the destination buffer's filename segment is always fully written
+before the OS_File that reads it fires. The "timing race" framing above
+was wrong; withdrawing it. Also checked &880c (the fade routine) itself
+for any involvement: it never touches the &8b94 path buffer or calls
+into this loader chain at all, so it can't be racing it either.
+Re-tested with the recoverable-X-flagged-OS_File fix in place: 5/5 clean
+`--boot` runs, zero recurrences of the garbage-path crash - consistent
+with it having been something else intermittent (most likely sheer
+scheduling luck in exactly when a vsync got serviced relative to the
+loader's own progress, not a buffer-content race), and the fix (treating
+a missing file as a recoverable error under X-flag, matching what the
+game's own retry loop already expects) remains the right one regardless
+of the exact trigger.
 
 Our os_file() used to treat *any* unresolved path as fatal regardless of
 the X-flag, which crashed the whole emulation on this - overly
@@ -1095,14 +1113,24 @@ exactly as the real game would. Confirmed stable across 8+ consecutive
 --boot runs post-fix (previously ~1 in 3 would crash).
 
 Net result of this update: two real bugs fixed (one a genuine, general
-translator correctness issue), stability improved, and the actual
-remaining blocker characterised precisely (a timing race in when a
-filename gets copied into a shared path buffer, upstream of LemBoot's
-own loader call) - but the logo still doesn't render to a stable visible
-frame yet. Next step: find what's *supposed* to call the &8b6c filename-
-copy routine before &8b4c's OS_File fires, and why it's sometimes late
-relative to our vsync-driven &880c calls - likely another instance of
-"our synthetic handler calls are injected outside the game's real
-timing" (same root cause already named for the generic in_handler
-catch-all fix above), needing either tighter sequencing or a better
-understanding of what real-hardware ordering guarantee we're missing.
+translator correctness issue), and stability improved - but the logo
+still doesn't render to a stable visible frame. Instrumented the actual
+destination-address slot LemBoot's loader writes assets to (R9 in the
+&8af0 routine, backed by memory word &8a20 - zero in the static image,
+so it's filled in at runtime): it does get set to a plausible-looking
+value (&01b80a00) early on and the loader completes cleanly, file loads
+and all, through to chain-load into LemProg - so the loader's own
+addressing isn't obviously broken either.
+
+What *does* look wrong: watching `vidc.log` across a full `--boot` run,
+&880c's palette-push step (B_8914, reached via the &87c4/&87c8 kicks in
+rt_service()) does fire for real - but every push across the whole
+LemBoot run writes all sixteen VIDC palette registers as zero, every
+time, with no exception. So &880c's machinery (gating, kicking, build
+step, push step) is now working end-to-end - it's just pushing a table
+that never contains anything but zero. That's the same shape of problem
+as LemProg's still-unresolved &8468 "target table" mystery, just on the
+LemBoot side: B_88bc (the "build table" step, called when &87c8 is set)
+is the next thing to trace - find what it's supposed to read the
+Krisalis-logo colours from, and why that source is empty. This is now
+the concrete next step, not a timing issue.
