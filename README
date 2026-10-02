@@ -887,3 +887,85 @@ fixes at this point. What remains is or likely routine: more scripted
 input (clicks, matching the real menu flow) to carry the game past
 successive "wait for click" gates far enough to observe the real,
 fully-converged in-game palette.
+
+NEW: LemBoot is now translated and actually run (--boot), not skipped
+---------------------------------------------------------------------
+Up to now the runtime always skipped straight to the decompressed
+LemProg, on the theory that LemBoot's job (decompress assets, chain-load)
+was already fully replicated by main()'s startup code. Built out the
+missing half of the static-recompilation pipeline for LemBoot itself, so
+it runs for real and we can see its splash-logo sequence - partly to
+answer the original scrambled-screen question directly (it didn't turn
+out to be needed for that - see above), partly because LemBoot's own
+logo-palette code, being much simpler than LemProg's, might show the
+"real" convention more clearly than LemProg's maze of F_8210/spec_852c/
+&84e8 did.
+
+Architecture: gen_c.py gained --prefix/--tabprefix (default F_xxxx/
+recomp_*) so a second translated program can coexist in the same binary
+without symbol collisions - LemBoot is generated separately with
+--prefix=B --tabprefix=recompB into recomp/genboot/ (see Makefile's
+`regen` target, or run it directly - same pattern as run_ghidra_lemboot.sh
+below). runtime.c keeps two independent {entry_tab, codemap, img_end}
+triples (one per program) and a `boot_mode` flag; the active globals
+(entry_tab/codemap/img_end, already used everywhere via CODECHK/
+call_addr) get swapped at the exact moment LemBoot's OS_File-255 loads a
+file whose leafname is "LemProg" and then jumps to &8000 to run it -
+detected in call_addr(), not guessed at. Pass --boot to start from
+LemBoot instead of jumping straight to LemProg; --bootimg= overrides the
+image path. Default behaviour (no --boot) is completely unchanged.
+
+Two more real obstacles found and fixed along the way, same spirit as
+everything else in this file:
+  - LemBoot copies its first &2000 bytes from &8000 to &40000 and
+    continues running from there (see &8010-&802c) - this is how real
+    hardware safely lets it OS_File-load the next asset *at* &8000,
+    overwriting the low copy of itself, while still running loader logic
+    from the safe high copy. Our compiled functions don't read
+    instructions from MEM at all (pure address-dispatched, pre-
+    translated C), so they never go stale when &8000 gets overwritten -
+    we don't need the relocation trick at all. call_addr() now
+    transparently remaps any jump into the relocated copy (&40000 to
+    &40000+(image size)) back to the matching original &8000-based
+    address and dispatches there instead.
+  - &82c0 (continuation of the relocation-copy loop) turned out to be
+    reached only via that relocated jump, so spider's static trace never
+    found it - exact same class of gap as LemProg's &19388 early in this
+    project. Seeded it as an extra entry point in run_ghidra_lemboot.sh
+    (now calling export_ghidra.py directly, same as run_ghidra_lemprog.sh
+    already did - it hadn't needed to before), which took LemBoot from
+    29 to 57 translated functions.
+  - LemBoot has its own, address-different analogue of the &84e8/&84ec
+    hardware-completion pair (&87c4/&87c8, found at &8a30/&886c) - same
+    "kick to &ff, wait for hardware to clear it" idiom, same fix (let
+    writes land, clear once per vsync, bounded to boot_mode).
+
+Result: --boot runs clean, no crash, no untranslated-address gap, for
+150M+ headless instructions and real multi-second interactive runs - chain
+-loads into LemProg correctly (detected and logged: "chain-load: LemBoot
+-> LemProg"), and *does* load+decompress Krisalis's logo into real screen
+memory via LemBoot's own translated code (confirmed with the same raw-
+dump + synthetic-palette technique used earlier in this file - the
+rendered image is unmistakably a logo, wing/ribbon artwork consistent
+with "Krisalis" / chrysalis imagery).
+
+Not there yet: the logo never becomes visible, because LemBoot's palette
+for it is never set (OS_Word 12 and direct VIDC writes both silent during
+the whole Krisalis-to-chain-load window - confirmed by instrumenting all
+three). Found a structurally-plausible candidate - a 16-colour OS_Word 12
+loop at &829c inside a small function (&8258, called from &8234) with the
+exact same shape as LemProg's F_8210 - but it has *zero* callers in
+LemBoot's own static analysis, same "looks dead" signature as F_8210 and
+spec_852c before it, and isn't reached in any test run so far. Current
+best guess: the real display/fade/wait sequence for each logo lives on a
+code path spider hasn't discovered yet (most likely reached only via
+another relocation-style indirect jump, the same reason &82c0 needed
+seeding) - the path we currently take from &82c0 leads relatively
+directly to loading LemProg, skipping whatever would normally trigger
+the logo's palette and fade. Also: the chain-load to LemProg happens
+*very* soon after Krisalis loads (as little as ~380K instructions in
+headless terms) with no large wait in between, reinforcing that we're
+skipping a step rather than genuinely waiting one out. Next step would be
+the same technique used for &19388/&82c0: find what *should* branch into
+the display routine (most likely another indirect/relocated jump) and
+seed it explicitly.

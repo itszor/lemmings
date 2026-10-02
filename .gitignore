@@ -20,6 +20,7 @@ asm/*.log
 
 # Recompilation: generated C (python3 gen_c.py), objects, binary, run outputs
 recomp/gen/
+recomp/genboot/
 recomp/*.o
 recomp/lemmings
 recomp/*.events

@@ -9,6 +9,13 @@ set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 G=${GHIDRA:-/home/jules/stuff/ghidra/ghidra_12.1.3_PUBLIC}
 IMG="$HERE/../extracted/!LEMMINGS/LemBoot,fffff843-00000000"
+# &82c0: only reached via LemBoot's self-relocation trick (copies &8000-
+# &9fff to &40000 and continues from there, see &8010-&802c) - spider's
+# static trace doesn't follow that, so this is otherwise unreached. The
+# runtime transparently redirects any jump into the relocated copy back
+# to these original addresses (see call_addr()), so seeding this one
+# entry point here is enough for spider to discover the real code.
+python3 "$HERE/export_ghidra.py" "$IMG" 8000 "$HERE/lemboot.json" 0x82c0
 rm -rf "$HERE/project/LemBoot.gpr" "$HERE/project/LemBoot.rep"
 mkdir -p "$HERE/project" "$HERE/out/lemboot"
 "$G/support/analyzeHeadless" "$HERE/project" LemBoot \

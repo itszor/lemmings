@@ -45,13 +45,31 @@ uint64_t icount, irq_next;
 const uint8_t *codemap;
 uint32_t img_end;
 
-/* generated */
+/* generated: LemProg (the main engine) */
 extern const struct entry { uint32_t a; fn_t f; } recomp_entries[];
 extern const unsigned recomp_nentries;
 extern const uint8_t recomp_codemap[];
 extern const uint32_t recomp_img_end;
 
+/* generated: LemBoot (the loader/splash-logo program - see --boot) */
+extern const struct entry recompB_entries[];
+extern const unsigned recompB_nentries;
+extern const uint8_t recompB_codemap[];
+extern const uint32_t recompB_img_end;
+
 static fn_t *entry_tab;                 /* direct-mapped: (a - LOAD) >> 2 */
+/* LemBoot and LemProg are separate programs that both load at &8000 (RISC
+ * OS's standard Absolute load address) at different times - LemBoot loads
+ * and decompresses each asset (splash logos, then the real engine) to
+ * &8000 in turn, chain-loading into whichever one is freshly there. Our
+ * translated code for each lives in a disjoint symbol namespace (gen_c.py
+ * --prefix), and the active {entry_tab, codemap, img_end} triple is swapped
+ * swapped in call_addr() at the exact moment of the real chain-load. */
+static fn_t *entry_tab_boot, *entry_tab_game;
+static const uint8_t *codemap_boot, *codemap_game;
+static uint32_t img_end_boot, img_end_game;
+static int boot_mode;                   /* 1 while running LemBoot's own code */
+static int boot_loaded_lemprog;         /* set by os_file() when it just served LemProg */
 static const char *appdir = "../extracted/!LEMMINGS";
 static uint64_t limit = 20000000;
 static int in_handler;
@@ -281,6 +299,37 @@ static int seen_gap(uint32_t a)
 void call_addr(uint32_t a)
 {
     if (a == RETURN_TO_OS) finish("returned to OS");
+    if (boot_mode && a >= 0x40000 && a < 0x40000 + (img_end_boot - LOAD)) {
+        /* LemBoot copies its first &2000 bytes from &8000 to &40000 and
+         * continues running from there (see the loop at &8010-&802c) -
+         * real hardware needs this so it can safely OS_File-load the next
+         * asset *at* &8000, overwriting the low copy of itself, while
+         * still running loader logic from the safe high copy. Our
+         * compiled functions don't read instructions from MEM at all
+         * (they're pre-translated, dispatched purely by address), so they
+         * never go stale when &8000 gets overwritten - we can just keep
+         * dispatching to the original (&8000-based) compiled function for
+         * any jump into the relocated copy, sidestepping the relocation
+         * trick entirely. */
+        a -= 0x38000;
+        npc = a;
+    }
+    if (boot_mode && a < LOAD) {
+        /* LemBoot's post-unpack "return" from the shared loader (&8aac et
+         * al) goes through the real hardware vector area (&0-&34) via a
+         * push-pc/pop-pc trick, relying on however the kernel's vectors
+         * are really set up there - we don't emulate that, but direct
+         * arm2.py emulation confirms it's a harmless pass-through that
+         * always ends up jumping to &8000 (the just-loaded program), so
+         * just go straight there instead of treating it as a gap. */
+        npc = LOAD;
+        return;
+    }
+    if (boot_mode && boot_loaded_lemprog && a == LOAD) {
+        entry_tab = entry_tab_game; codemap = codemap_game; img_end = img_end_game;
+        boot_mode = 0; boot_loaded_lemprog = 0;
+        fprintf(stderr, "chain-load: LemBoot -> LemProg at icount %llu\n", (unsigned long long)icount);
+    }
     fn_t f = (!interp_only && a >= LOAD && a < img_end) ? entry_tab[(a - LOAD) >> 2] : 0;
     if (f) { f(a); return; }
     if (a == HANDLER_RET) return;
@@ -392,7 +441,7 @@ static void rt_service(int vsync_now)
     }
     if (vsync_now || now >= next_vsync_ns) {
         next_vsync_ns += 2 * CS_NS;
-        WR32(0x2a5b0, RD32(0x2a5b0) + 1);  /* see README: vsync tick counter */
+        if (!boot_mode) WR32(0x2a5b0, RD32(0x2a5b0) + 1);  /* see README: vsync tick counter (LemProg-specific address) */
         display_poll();
         if (nscript) run_script();
         if (screenshot_requested) {
@@ -405,8 +454,10 @@ static void rt_service(int vsync_now)
         if (quit_requested) finish("window closed");
         display_present(displayed(), 640);
         monotonic += 2;
-        call_852c(0x8, 0);     /* IOC14 bit3: build the palette table (F_8618 chain) */
-        call_852c(0x40, 0);    /* IOC14 bit6: push that table's values to VIDC */
+        if (!boot_mode) {
+            call_852c(0x8, 0);     /* IOC14 bit3: build the palette table (F_8618 chain) */
+            call_852c(0x40, 0);    /* IOC14 bit6: push that table's values to VIDC */
+        }
         /* &84e8/&84ec: a generic hardware-completion pair, set to &ff by
          * "kick" sites and polled by busy-waits all over the code (see
          * README) - but also read as a plain nonzero/zero "pending work"
@@ -418,6 +469,13 @@ static void rt_service(int vsync_now)
          * most one vsync period for any busy-wait), same spirit as the
          * &2a5b0 tick-counter fix. */
         WR32(0x84e8, 0); WR32(0x84ec, 0);
+        /* LemBoot's own analogous hardware-completion pair (&87c4/&87c8,
+         * checked by the same "kick to &ff, wait for hardware to clear it"
+         * idiom as &84e8/&84ec above, just LemBoot-specific addresses -
+         * found at &8a30/&886c during --boot bring-up). Same bounded-clear
+         * fix; guarded to boot_mode since these addresses are meaningless
+         * (ordinary LemProg memory) once LemProg is running. */
+        if (boot_mode) { WR32(0x87c4, 0); WR32(0x87c8, 0); }
         uint32_t r[2] = {4, 0};
         call_vector(0x10, 2, r);
         if (mouse_buttons != last_buttons) {
@@ -453,8 +511,9 @@ void irq_point(void)
     if (icount >= next_vsync) {
         next_vsync += VSYNC_STEPS;
         monotonic += 2;
-        WR32(0x2a5b0, RD32(0x2a5b0) + 1);  /* see README: vsync tick counter */
+        if (!boot_mode) WR32(0x2a5b0, RD32(0x2a5b0) + 1);  /* see README: vsync tick counter (LemProg-specific address) */
         WR32(0x84e8, 0); WR32(0x84ec, 0);  /* see rt_service(): bounded hw-completion clear */
+        if (boot_mode) { WR32(0x87c4, 0); WR32(0x87c8, 0); }  /* see rt_service(): LemBoot's own pair */
         uint32_t r[2] = {4, 0};
         call_vector(0x10, 2, r);
     }
@@ -622,6 +681,11 @@ static void os_file(void)
         if (R[3] & 0xFF) finish("load at file address unsupported");
         long len = load_file(path, R[2]);
         R[4] = (uint32_t)len; R[0] = 1;
+        if (boot_mode) {
+            const char *leaf = strrchr(name, '.');
+            leaf = leaf ? leaf + 1 : name;
+            if (!strcasecmp(leaf, "LemProg")) boot_loaded_lemprog = 1;
+        }
         return;
     }
     if (op == 5 || op == 17 || op == 13 || op == 15) {
@@ -736,6 +800,7 @@ void swi(uint32_t n, uint32_t nextpc)
             vectors[R[0]].code = R[1]; vectors[R[0]].ws = R[2]; vectors[R[0]].set = 1;
         }
         return;
+    case 0x1D: return;                      /* OS_RemoveCursors: no cursor to hide */
     case 0x2C: CF = interactive ? escape_pressed : 0; return;
     case 0x31: {
         uint32_t i = R[0], o = R[1];
@@ -1008,10 +1073,18 @@ static void finish(const char *why)
     exit(0);
 }
 
+static fn_t *build_tab(const struct entry *ents, unsigned n, uint32_t end)
+{
+    fn_t *tab = calloc((end - LOAD) / 4 + 1, sizeof(fn_t));
+    for (unsigned k = 0; k < n; k++) tab[(ents[k].a - LOAD) >> 2] = ents[k].f;
+    return tab;
+}
+
 int main(int argc, char **argv)
 {
     const char *image = "../extracted_decompressed/LemProg.bin";
-    int scale = 4, headless = 0, no_title = 0;
+    const char *boot_image = "../extracted/!LEMMINGS/LemBoot,fffff843-00000000";
+    int scale = 4, headless = 0, no_title = 0, want_boot = 0;
     const char *fs = NULL, *wavpath = NULL;
     int no_sound = 0;
     for (int k = 1; k < argc; k++)
@@ -1024,6 +1097,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[k], "--full-os")) full_os = 1;
         else if (!strcmp(argv[k], "--no-title")) no_title = 1;
         else if (!strcmp(argv[k], "--trace-gaps")) trace_gaps = 1;
+        else if (!strcmp(argv[k], "--boot")) want_boot = 1;
+        else if (!strncmp(argv[k], "--bootimg=", 10)) boot_image = argv[k] + 10;
         else if (!strcmp(argv[k], "--fullscreen")) fs = "";
         else if (!strcmp(argv[k], "--no-sound")) no_sound = 1;
         else if (!strncmp(argv[k], "--wav=", 6)) wavpath = argv[k] + 6;
@@ -1045,7 +1120,6 @@ int main(int argc, char **argv)
     char fn[512];
     snprintf(fn, sizeof fn, "%s.events", outprefix);
     evlog = fopen(fn, "w");
-    img_end = recomp_img_end;
     if (interactive) {
         if (!display_init(scale, fs)) return 1;
         if (!no_sound && !wavpath) sound_init_device();
@@ -1055,20 +1129,29 @@ int main(int argc, char **argv)
     if (full_os && !no_title) {
         /* Galactic Dan's !Run displays !TitlePic (a small loader-stage
          * program) before !RunImage; Lemmings' equivalent splash sequence
-         * (Krisalis/PSYGNO/DmaLogo) is driven by LemBoot's own code, which
-         * we don't execute here (we jump straight to the decompressed
-         * LemProg) - so there's nothing to run_loader_program() yet. */
+         * (Krisalis/PSYGNO/DmaLogo) is driven by LemBoot's own code - see
+         * --boot, which runs LemBoot for real instead of jumping straight
+         * to the decompressed LemProg. */
         recompute_irq();
     }
-    FILE *f = fopen(image, "rb");
-    if (!f) { perror(image); return 1; }
+    img_end_game = recomp_img_end;
+    entry_tab_game = build_tab(recomp_entries, recomp_nentries, img_end_game);
+    codemap_game = recomp_codemap;
+    img_end_boot = recompB_img_end;
+    entry_tab_boot = build_tab(recompB_entries, recompB_nentries, img_end_boot);
+    codemap_boot = recompB_codemap;
+
+    const char *start_image = want_boot ? boot_image : image;
+    FILE *f = fopen(start_image, "rb");
+    if (!f) { perror(start_image); return 1; }
     long n = fread(MEM + LOAD, 1, MEMSIZE - LOAD, f);
     fclose(f);
-    if (LOAD + n != img_end) fprintf(stderr, "warning: image size differs from compiled image\n");
-    codemap = recomp_codemap;
-    entry_tab = calloc((img_end - LOAD) / 4 + 1, sizeof(fn_t));
-    for (unsigned k = 0; k < recomp_nentries; k++)
-        entry_tab[(recomp_entries[k].a - LOAD) >> 2] = recomp_entries[k].f;
+    uint32_t start_img_end = want_boot ? img_end_boot : img_end_game;
+    if (LOAD + n != start_img_end) fprintf(stderr, "warning: image size differs from compiled image\n");
+    boot_mode = want_boot;
+    entry_tab = want_boot ? entry_tab_boot : entry_tab_game;
+    codemap = want_boot ? codemap_boot : codemap_game;
+    img_end = start_img_end;
     R[13] = 0xA8000; R[14] = RETURN_TO_OS; R[12] = 0;
     npc = LOAD;
     recompute_irq();

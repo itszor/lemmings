@@ -1,8 +1,9 @@
-# Static recompilation of Lemmings (LemProg)
+# Static recompilation of Lemmings (LemProg + LemBoot)
 CC      ?= gcc
 CFLAGS  ?= -O2 -g -w -fno-strict-aliasing $(if $(TRACE),-DRECOMP_TRACE)
 GEN     := $(wildcard gen/code*.c) gen/entries.c
-OBJ     := $(GEN:.c=.o) runtime.o vdu.o display.o sound.o
+GENBOOT := $(wildcard genboot/code*.c) genboot/entries.c
+OBJ     := $(GEN:.c=.o) $(GENBOOT:.c=.o) runtime.o vdu.o display.o sound.o
 LIBS    := $(shell pkg-config --libs sdl3) -lm
 SDLCF   := $(shell pkg-config --cflags sdl3)
 
@@ -10,6 +11,9 @@ lemmings: $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LIBS)
 
 gen/%.o: gen/%.c runtime.h gen/gen.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+genboot/%.o: genboot/%.c runtime.h genboot/gen.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
 runtime.o: runtime.c runtime.h os.h
@@ -26,6 +30,9 @@ display.o: display.c os.h
 
 regen:
 	python3 gen_c.py
+	python3 gen_c.py --img=../extracted/\!LEMMINGS/LemBoot,fffff843-00000000 \
+	    --json=../ghidra/lemboot.json --tsvdir=../ghidra/out/lemboot \
+	    --prefix=B --tabprefix=recompB --out=genboot --files=2
 
 clean:
-	rm -f gen/*.o runtime.o vdu.o display.o sound.o lemmings
+	rm -f gen/*.o genboot/*.o runtime.o vdu.o display.o sound.o lemmings
