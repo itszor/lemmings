@@ -730,3 +730,58 @@ banners at the bottom - exactly what Lemmings' control panel should look
 like. The screen-mode/stride bug that's been the subject of this entire
 "scrambled screen" investigation is resolved; only the real-palette gap
 (F_8210 above) remains before this renders correctly in colour.
+
+Chased F_8210's (in)direct caller as asked. Exhaustive static search found
+none - literal-word scan across the *entire* disc image (not just
+LemProg), every BL call site, ARM2 jump-table idioms (`add rX,pc,#0` +
+`ldr pc,[rX,rY,lsl#2]`, found and checked two real instances elsewhere -
+neither is this one), and every indirect-branch form ARM2 supports
+(`mov pc,rX`, `ldr pc,[...]`, scanned as raw bytes across all 147KB, not
+just translated code) - none of them reference &8210, &820c (checked as
+a plausible real-entry-one-instruction-earlier candidate) or &8234. It
+really is dead code, same as spec_852c.
+
+That search led somewhere better, though: re-examining spec_852c (which
+*is* real, reachable hardware-interrupt code - our runtime already calls
+it via call_852c(), per the VIDC section above) turned up the actual
+16-colour mechanism. spec_852c branches on IOC status bits: bit 3
+("flyback start") calls F_8618 -> conditionally F_8650 and F_86ac ->
+F_870c (a per-component palette-fade helper - compares a "current" nibble
+against a "target" nibble and steps it one unit closer, R,G,B separately),
+which *builds* the live 16+16-colour source table at &83e8-&8467; bit 6
+("flyback active", no bit 3) just *displays* a slice of whatever's
+currently in that table to VIDC's registers. Our runtime had only ever
+called the bit-6 (display) path - never bit-3 (build) - so the table
+could never become anything but its compiled-in zero default, matching
+exactly what was observed ("every value is zero").
+
+Enabling the bit-3 path crashed almost immediately: spec_852c's bit-3
+exit doesn't return via R14 like its bit-6 exit does - it re-reads its
+own first instruction word (&852c, statically 0) as a chain-vector and
+jumps there, expecting the real low-level kernel IRQ-chain installer
+(&2a688-&2a6e4, writing into low workspace &100 - the same "direct
+hardware-IRQ dispatch slot" this section already flagged as unemulated)
+to have patched it with the next handler's address first. Unpatched,
+that's a jump to address 0. Fixed with the same kind of targeted
+intervention as the &84e8/&2a5b0 cases: call_addr() now treats a jump to
+address 0 *while inside one of our synthetic handler calls specifically*
+(the `in_handler` flag, already scoped to exactly call_852c()/
+call_vector() - not a blanket rule that could mask a real gap elsewhere)
+as end-of-chain/return rather than crashing. runtime.c's rt_service() now
+calls both `call_852c(0x8, 0)` (build) and `call_852c(0x40, 0)` (display)
+each frame. Confirmed stable over a 60-second/16-billion-instruction soak
+(with a "Start Game" click) - no crash, no regression.
+
+Still not fully there: even with the build path safely exercised every
+frame, vidc.log stays all-zero. Traced one level deeper: F_86ac zeroes
+the &83e8 (dest/"current") table, then F_870c fades it toward a *target*
+table it reads from &8468-&84e7 - and that target table is *also* all-
+zero in the static image, with no writer found anywhere in the translated
+code (same literal/PC-relative search as everywhere else in this
+investigation). So the fade genuinely has nothing to fade toward yet.
+Given level/graphics-set-specific palettes are a standard convention for
+this era, and LemGrafP/LemLevels loading is part of the ~77% of LemProg
+that's never been traced (see item 5 in the status list), the most likely
+next step is tracing whatever writes &8468+ - probably reachable only
+from the level-loading code, not the title/panel-screen init path this
+whole investigation has focused on so far.

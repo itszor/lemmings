@@ -262,12 +262,12 @@ static void log_untranslated_branch(uint32_t a)
 {
     FILE *f = fopen("untranslated.log", "a");
     if (f) {
-        fprintf(f, "%llu: branch to untranslated address %08x (LR=%08x)\n",
-                (unsigned long long)icount, a, R[14]);
+        fprintf(f, "%llu: branch to untranslated address %08x (LR=%08x, from pc=%08x)\n",
+                (unsigned long long)icount, a, R[14], g_cur_pc);
         fclose(f);
     }
-    fprintf(stderr, "branch to untranslated address %08x (icount %llu, LR=%08x) - see untranslated.log\n",
-            a, (unsigned long long)icount, R[14]);
+    fprintf(stderr, "branch to untranslated address %08x (icount %llu, LR=%08x, from pc=%08x) - see untranslated.log\n",
+            a, (unsigned long long)icount, R[14], g_cur_pc);
 }
 
 static int seen_gap(uint32_t a)
@@ -284,6 +284,14 @@ void call_addr(uint32_t a)
     fn_t f = (!interp_only && a >= LOAD && a < img_end) ? entry_tab[(a - LOAD) >> 2] : 0;
     if (f) { f(a); return; }
     if (a == HANDLER_RET) return;
+    /* spec_852c's "bit3" path doesn't return via R14 - it re-reads its own
+     * first word (&852c, statically 0) as a chain-vector and jumps there,
+     * expecting the real low-level kernel IRQ-chain installer (&2a688-
+     * &2a6e4, into low workspace &100 - never emulated, see call_852c())
+     * to have patched it with the next handler's address. Unpatched, that's
+     * a jump to address 0 - treat "nothing chained" as end-of-chain/return
+     * rather than crashing, same spirit as the &84e8/&2a5b0 fixes. */
+    if (in_handler && a == 0) { npc = HANDLER_RET; return; }
     if (trace_gaps) {
         if (!seen_gap(a)) log_untranslated_branch(a);
         interp_step();
@@ -397,9 +405,8 @@ static void rt_service(int vsync_now)
         if (quit_requested) finish("window closed");
         display_present(displayed(), 640);
         monotonic += 2;
-        /* call_852c(0x40, 0); disabled - spec_852c has zero callers and its
-         * source tables never get populated (see README); OS_Word 12 turned
-         * out to be the real palette mechanism the game actually uses. */
+        call_852c(0x8, 0);     /* IOC14 bit3: build the palette table (F_8618 chain) */
+        call_852c(0x40, 0);    /* IOC14 bit6: push that table's values to VIDC */
         uint32_t r[2] = {4, 0};
         call_vector(0x10, 2, r);
         if (mouse_buttons != last_buttons) {
