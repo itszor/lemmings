@@ -1235,3 +1235,21 @@ UPDATE - real-time pacing, split palette, and the interpreted &852c word.
     fall inside blank bands on screen (rows 175-184 / 72-79), so the model
     is consistent. Level colours, including the briefing mini-map, are now
     correct.
+
+FIXED - glitchy trapdoor animation at level start: an LDM emulation bug.
+Every other door frame was drawn on top of leftovers. The double buffering
+was fine (each bank is restored identically before drawing); the odd
+animation frames were wrong. The object frame-advance code (&24eb8-&24f5c)
+computes frame pointer = base + frame * frame_size from big-endian
+Amiga-format fields, and the trapdoor's frame_size is &2ee = 750 bytes.
+That is the Amiga size (48x25, 4 bitplanes + mask = 5*6*25), kept by the
+port even though its own chunky data per frame is only 600 bytes. So odd
+frames start on a halfword boundary (e.g. &6b106, where the real data is
+at &6b104). The plotter reads them with `ldm r10!,{r6,r7}` (&24808).
+Real ARM2 LDM ignores address bits 0-1, which lands exactly on the data;
+our LDM_R used RD32's LDR-style rotate instead, so every odd frame was
+read 2 bytes out. Fixed in runtime.h's LDM_BEGIN (align the start
+address), in the runtime interpreter's LDM/STM, and in tools/arm2.py (the
+same bug, inherited from galactic dan). Re-running tools/unpack_lemboot.py
+gives byte-identical extracted_decompressed/ files, and the door now
+opens smoothly frame by frame.

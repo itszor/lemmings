@@ -254,7 +254,7 @@ class ARM:
             wbv = base - 4 * n
         pc = self.r[15]
         self.r[15] = nextpc
-        a = start & M32
+        a = start & M32 & ~3                 # LDM/STM ignore address bits 0-1 (no rotation)
         if l:
             if w and rn != 15: self.r[rn] = wbv & M32
             for k in regs:

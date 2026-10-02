@@ -207,7 +207,10 @@ static inline uint32_t SHRC(uint32_t v, int typ, uint32_t amt) { uint32_t c; shr
         if ((wb) >= 0) R[(wb) & 15] = _a; } while (0)
 
 /* ---- block transfer: generator unrolls the register list ---------------------- */
-#define LDM_BEGIN(start)  do { uint32_t _m = (start);
+/* LDM ignores the low two address bits (no rotation, unlike LDR) - LemProg's
+ * object plotter relies on this: odd animation frames of 750-byte Amiga-sized
+ * frames start on halfword boundaries (e.g. the level trapdoor). */
+#define LDM_BEGIN(start)  do { uint32_t _m = (start) & ~3u;
 #define LDM_R(k)          R[k] = RD32(_m); _m += 4;
 #define LDM_PC(s)         { uint32_t _v = RD32(_m); _m += 4; npc = _v & 0x3FFFFFC; if (s) SETPSR(_v); }
 #define STM_BEGIN(start)  do { uint32_t _m = (start);

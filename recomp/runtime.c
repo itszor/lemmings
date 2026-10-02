@@ -1095,7 +1095,7 @@ static int exec_word(uint32_t pc, uint32_t i)
         uint32_t base = rn != 15 ? R[rn] : pc + 8, start, wbv;
         if (u) { start = base + (p ? 4 : 0); wbv = base + 4 * n; }
         else { start = base - 4 * n + (p ? 0 : 4); wbv = base - 4 * n; }
-        uint32_t a = start;
+        uint32_t a = start & ~3u;                              /* LDM/STM ignore address bits 0-1 */
         int jumped = 0;
         if (l) {
             if (w && rn != 15) R[rn] = wbv;
