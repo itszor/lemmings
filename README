@@ -659,3 +659,74 @@ we haven't met - recall spec_852c itself was VIDC-register-based and
 *is* real RISC OS hardware, just seemingly unused by this build); or
 whether the comb/grid pattern is in fact supposed to stay monochrome at
 this stage and the still-missing piece is elsewhere entirely. Left open.
+
+MAJOR UPDATE - the scrambled screen is fixed; it was a screen-mode/stride
+bug, not a data bug. Went looking at the two non-LemProg code modules
+(MemMod/TequeMemory, musmod2/MusicModule2) for clues, since neither had
+been disassembled before (item 9 in the status list - both are RISC OS
+*modules*, different header format, never traced). Disassembled both
+directly with capstone (no spider/Ghidra adaptation needed for a quick
+look - module init code is short and position-independent):
+  - musmod2's init just claims its own RMA workspace and registers two
+    `*Set File$Type_CC5`/`Alias$@RunType_CC5` filetype associations for
+    `.CC5` ("TeqMusic") files - no vector claims, no hardware touches. A
+    dead end for this investigation, consistent with it never being
+    called at all (confirmed previously).
+  - MemMod's init calls a "read current size, compute delta, grow" dynamic
+    -area helper (OS_ReadDynamicArea/OS_ChangeDynamicArea) six times for
+    areas 0-5, with target sizes {0,0,&14000,0,0,0} - i.e. area 2 gets
+    grown to exactly &14000 bytes. That's the *same* &14000 constant as
+    the screen zero-fill loop's size (see above) - worth noting, but ours
+    runtime doesn't execute module init code at all (no RMLoad
+    simulation exists), so this call never happens for us either way.
+
+That &14000-sized dynamic area turned out to be the thread worth pulling,
+via a much more direct route: read `!Run` and `!RunCold` (the disc's Obey
+files - plain text, trivial to check, never read before now) directly.
+Before LemBoot even starts, `!Run` does `RMensure TequeMemory ... RMLoad
+MemMod`, then `echo <22> <12>` - a raw `VDU 22,12` byte sequence, i.e.
+*select screen MODE 12* (RISC OS standard mode: 640x256, 4bpp/16-colour).
+This directly contradicts the "320x200" screen geometry the runtime had
+been using since early in this project - that was never directly
+confirmed, only inferred from the game's own OS_Mouse /4 coordinate
+scaling, which turns out to be the game's own internal choice of tracking
+precision, not necessarily the real hardware Eig factors.
+
+640*256*4bpp/8 = &14000 bytes/screen-bank - which cleanly explains *three*
+independent &14000 sightings at once: the screen zero-fill loop in
+LemProg's init, MemMod's area-2 resize target above, and (in hindsight)
+why reverting the bank-stride constant from galactic dan's inherited
+&14000 to 32000 earlier in this project never actually fixed anything -
+&14000 was right all along, just for a different reason (real 640x256
+geometry) than galactic dan's coincidental 320x256x8bpp total.
+
+Also found a second, related inconsistency while fixing this: display.c
+(display_present/display_screenshot) already hardcoded 256 rows
+unconditionally, while runtime.c's bank-stride (32000 = 160 bytes/row *
+200 rows) only accounted for 200 - so even before this fix, every
+screenshot/frame was already silently reading 56 rows past each bank's
+real data into the next bank. That alone would produce exactly the kind
+of structured-but-wrong "comb" pattern seen throughout this whole
+investigation.
+
+Fixed: vduvar()/the OS_ReadModeVariable mv[] table/os_write_bank_addr()/
+displayed() in runtime.c now use 640x256, LineLength 320 bytes/row,
+&14000 bytes/bank, XEig=1/YEig=2, ScrRCol/ScrBRow=639/255. Also removed
+the leftover galactic-dan `vdu_mode == 15 ? 640 : 320` conditionals in
+rt_service() (vdu_mode is never meaningfully set for Lemmings - its VDU
+driver is still a stub - so these always took the wrong branch anyway);
+display is unconditionally 640 wide now.
+
+Confirmed with raw pixel analysis, not just a screenshot: dumped the live
+screen bank (recomp.screen, written by finish() on every exit) and
+checked byte diversity directly - 215 distinct values across the &14000-
+byte bank, dominated by background (0, ~55%) with a long real tail, not
+near-uniform noise. Rendered the raw nibble data through a synthetic
+16-colour "rainbow" palette (real colours 1-15 still aren't being set -
+see above, that part's still open) and got an unmistakable, correctly-
+proportioned picture: a row of ~8-9 repeated icon-shaped blocks (the
+skill-panel icons), a row of two-digit counters under each one, and text
+banners at the bottom - exactly what Lemmings' control panel should look
+like. The screen-mode/stride bug that's been the subject of this entire
+"scrambled screen" investigation is resolved; only the real-palette gap
+(F_8210 above) remains before this renders correctly in colour.

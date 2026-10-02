@@ -129,7 +129,7 @@ void dbg_hook(uint32_t a)
 void watch_write(uint32_t addr, uint32_t val)
 {
     static uint32_t seen_pc[64]; static int n;
-    uint32_t lo = SCREEN, hi = SCREEN + 3 * 32000;
+    uint32_t lo = SCREEN, hi = SCREEN + 3 * 0x14000;
     if (addr >= lo && addr < hi) {
         for (int k = 0; k < n; k++) if (seen_pc[k] == g_cur_pc) return;
         if (n < 64) {
@@ -176,7 +176,7 @@ static void call_852c(uint32_t ioc14, uint32_t ioc24)
     npc = snpc;
 }
 
-uint32_t os_write_bank_addr(void) { return SCREEN + bank * 32000; }
+uint32_t os_write_bank_addr(void) { return SCREEN + bank * 0x14000; }
 uint32_t os_screen_base(void) { return SCREEN; }
 
 /* Direct VIDC register writes (physical &3400000): LemProg bypasses the OS
@@ -349,7 +349,7 @@ static void call_vector(unsigned vec, int nregs, const uint32_t *regs)
 
 static const uint8_t *displayed(void)
 {
-    return MEM + SCREEN + (vdu_mode == 15 ? 0 : display_bank * 32000);
+    return MEM + SCREEN + display_bank * 0x14000;
 }
 
 /* Run a loader-stage program (e.g. !TitlePic) with the interpreter before
@@ -390,12 +390,12 @@ static void rt_service(int vsync_now)
         if (screenshot_requested) {
             char fn[64];
             snprintf(fn, sizeof fn, "screenshot-%d.bmp", ++shots);
-            display_screenshot(displayed(), vdu_mode == 15 ? 640 : 320, fn);
+            display_screenshot(displayed(), 640, fn);
             fprintf(stderr, "saved %s\n", fn);
             screenshot_requested = 0;
         }
         if (quit_requested) finish("window closed");
-        display_present(displayed(), vdu_mode == 15 ? 640 : 320);
+        display_present(displayed(), 640);
         monotonic += 2;
         /* call_852c(0x40, 0); disabled - spec_852c has zero callers and its
          * source tables never get populated (see README); OS_Word 12 turned
@@ -514,20 +514,26 @@ static long load_file(const char *path, uint32_t addr)
 
 static uint32_t vduvar(uint32_t v)
 {
-    /* Lemmings values (320x200, 4bpp/16-colour - see README), NOT galactic
-     * dan's inherited 320x256/8bpp ones. NColour (var 3) used to be lumped
-     * in with ScrBRow/var 12 (both were 255 for galactic dan, coincidence:
-     * 256 colours and 256-tall screen give the same -1); for Lemmings they
-     * diverge (15 vs 199) so var 3 is now split out on its own. */
+    /* Lemmings values: RISC OS MODE 12 (640x256, 4bpp/16-colour) - see
+     * README. The !Run Obey file does `echo <22> <12>` (raw VDU 22,12 =
+     * "select screen MODE 12") before LemBoot even starts, which is the
+     * real, directly-confirmed mode - NOT the previously assumed 320x200
+     * (that was an unverified inference from the game's own /4 mouse-
+     * coordinate scaling, which doesn't actually have to match the real
+     * hardware Eig factors). 640*256*4bpp/8 = &14000 bytes/bank, which
+     * independently matches both the screen zero-fill loop's size in
+     * LemProg's init and MemMod's dynamic-area-2 resize target - see
+     * README for the full cross-check. */
     switch (v) {
-    case 148: return SCREEN + bank * 32000;
-    case 149: return SCREEN + (full_os ? display_bank : bank) * 32000;
-    case 150: case 7: return 32000;            /* ScreenSize: 320*200/2 (4bpp) */
-    case 1: case 11: return 319;               /* width - 1 (same 320px width) */
-    case 2: case 12: return 199;               /* ScrBRow / height - 1 */
+    case 148: return SCREEN + bank * 0x14000;
+    case 149: return SCREEN + (full_os ? display_bank : bank) * 0x14000;
+    case 150: case 7: return 0x14000;          /* ScreenSize: 640*256/2 (4bpp) */
+    case 1: case 11: return 639;               /* ScrRCol / width - 1 */
+    case 2: case 12: return 255;               /* ScrBRow / height - 1 */
     case 3: return 15;                         /* NColour - 1 (16 colours) */
-    case 4: case 5: return 2;                  /* XEig/YEig - confirmed via OS_Mouse /4 scaling */
-    case 6: return 160;                        /* LineLength: 320px * 4bpp / 8 */
+    case 4: return 1;                          /* XEig: MODE 12 is 640px wide */
+    case 5: return 2;                          /* YEig: MODE 12 is 256px tall */
+    case 6: return 320;                        /* LineLength: 640px * 4bpp / 8 */
     case 9: return 2;                          /* Log2BPP: log2(4bpp) */
     default: return 0;
     }
@@ -722,7 +728,7 @@ void swi(uint32_t n, uint32_t nextpc)
         /* OS_ReadModeVariable, indices 0-12: ModeFlags, ScrRCol, ScrBRow,
          * NColour, XEig, YEig, LineLength, ScreenSize, YShadowSize, Log2BPP,
          * ?, ScrRCol(dup), ScrBRow(dup). Lemmings values - see vduvar(). */
-        static const uint32_t mv[13] = {0, 319, 199, 15, 2, 2, 160, 32000, 0, 2, 0, 319, 199};
+        static const uint32_t mv[13] = {0, 639, 255, 15, 1, 2, 320, 0x14000, 0, 2, 0, 639, 255};
         R[2] = R[1] < 13 ? mv[R[1]] : 0;
         return;
     }
