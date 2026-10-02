@@ -849,3 +849,41 @@ same investigative pattern as &84e8/&84ec and &2a5b0 (find who reads/
 writes &2acec, understand what real hardware condition it's gating on,
 apply the same kind of bounded-clear fix), just not done in this
 session - left open.
+
+UPDATE - &2acec turned out not to be a bug at all, and needed no fix.
+Found the writer directly: F_2a834 (literal address, already a known
+function - this is the same mouse-poll routine found much earlier in the
+project, used back when finding the real "Start Game" button). It wraps
+a real OS_Mouse call (SWI &1C) in an IRQ-disable/enable pair and stores
+the scaled X/Y/buttons into workspace at &2ace4/&2ace8/&2acec - so &2acec
+is simply *the live mouse button state*, refreshed every vsync via the
+already-working Event-vector chain (confirmed: F_2a834 is called from
+&2a70c, the same claimed Event handler this project already relies on
+elsewhere). The &176ac busy-wait (`while buttons==0: wait; while
+buttons!=0: wait`) is a completely ordinary "wait for the next click" UI
+idiom, not an unemulated-hardware condition - our test script simply
+only ever sent *one* click, so once the title screen's click was
+consumed, the game was correctly, legitimately waiting for a second one
+that never came.
+
+Confirmed by just sending a second scripted click (at 15s, after the
+first one at 5s): a huge burst of new screen-memory writes immediately
+follows (real level/tile-rendering code starting to run, well past the
+title panel) - proving the game was never stuck, just waiting on input
+our one-click test never gave it. It then hits *another* instance of the
+same family of waits (0x2a564 this time, not 0x176ac) - which is simply
+F_2a560, the vsync-threshold wait already identified and fixed earlier
+in this file (part of the &2a5b0 tick-counter family) - i.e. ordinary
+game pacing between menu transitions, not a new bug either. Palette
+convergence (vidc.log) doesn't progress further within this particular
+two-click test window, but that's expected: nothing suggests the
+build/display mechanism's "kicks" are tied to every transition, and this
+was a quick confirmation test, not a dedicated soak - worth retrying
+with a longer, multi-click script if resuming this thread.
+
+Net effect of this update: the palette and "scrambled screen" chapter of
+this investigation seems to require no more generic unemulated-hardware
+fixes at this point. What remains is or likely routine: more scripted
+input (clicks, matching the real menu flow) to carry the game past
+successive "wait for click" gates far enough to observe the real,
+fully-converged in-game palette.
