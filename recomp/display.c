@@ -164,14 +164,18 @@ int display_init(int scale, const char *fs)
 /* Lemmings programs VIDC's 16-entry palette directly (runtime.c's
  * vidc_write()), not via the OS - refresh our copy from it each frame.
  * Register format: bits 0-3 red, 4-7 green, 8-11 blue (4 bits each, 4bpp). */
+static uint32_t palette_top[16];           /* lines above palette_split (see os.h) */
 static void update_palette(void)
 {
     for (int c = 0; c < 16; c++) {
-        uint32_t v = vidc_palette[c];
+        uint32_t v = vidc_palette[c], t = vidc_palette_top[c];
         int r = (v & 0xF) * 17, g = ((v >> 4) & 0xF) * 17, b = ((v >> 8) & 0xF) * 17;
         palette[c] = (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+        r = (t & 0xF) * 17, g = ((t >> 4) & 0xF) * 17, b = ((t >> 8) & 0xF) * 17;
+        palette_top[c] = (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
     }
 }
+static const uint32_t *line_palette(int y) { return y < palette_split ? palette_top : palette; }
 
 void display_present(const uint8_t *pix, int width)
 {
@@ -184,7 +188,7 @@ void display_present(const uint8_t *pix, int width)
         for (int x = 0; x < width; x++) {
             uint8_t byte = pix[y * (width / 2) + x / 2];
             uint8_t nib = (x & 1) ? (byte >> 4) : (byte & 0xF);
-            row[x] = palette[nib];
+            row[x] = line_palette(y)[nib];
         }
     }
     SDL_UnlockTexture(tex);
@@ -286,7 +290,7 @@ void display_screenshot(const uint8_t *pix, int width, const char *path)
         for (int x = 0; x < width; x++) {
             uint8_t byte = pix[y * (width / 2) + x / 2];
             uint8_t nib = (x & 1) ? (byte >> 4) : (byte & 0xF);
-            row[x] = palette[nib];
+            row[x] = line_palette(y)[nib];
         }
     }
     SDL_SaveBMP(s, path);

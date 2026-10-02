@@ -6,6 +6,8 @@
 /* runtime.c */
 uint32_t os_write_bank_addr(void);        /* screen memory the VDU drivers write to */
 uint32_t os_screen_base(void);
+extern uint32_t vidc_palette_top[16];     /* palette for lines [0, palette_split) */
+extern int palette_split;                 /* 0: whole frame uses vidc_palette */
 extern uint32_t vidc_palette[16];         /* live 4bpp VIDC palette (0x0BGR per entry) */
 
 /* vdu.c */

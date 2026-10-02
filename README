@@ -1205,3 +1205,33 @@ for a mid-screen split (the panel). We call both paths once per frame and
 show the whole frame with whichever palette was pushed last. The title and
 level screens look right so far, but a real per-scanline split isn't
 emulated.
+
+UPDATE - real-time pacing, split palette, and the interpreted &852c word.
+
+  - Speed: the game ran at double speed. The vsync Event handler &2a70c
+    calls &2a5b4, which increments &2a5b0 itself (`str r2,[pc,#-0x18]` at
+    &2a5c0 - the earlier "&2a5d0" reading above was wrong), and the runtime
+    *also* bumped &2a5b0 every vsync. I removed the runtime's increment.
+    The runtime also dispatched its mouse event (10) through EventV
+    unconditionally, and &2a70c doesn't check the event number, so each
+    click counted as an extra frame. EventV now only gets events enabled
+    with OS_Byte 14 (LemProg enables just event 4). Confirmed: the
+    in-level TIME counter drops exactly 10 seconds over 10 real seconds.
+  - The interpreted instructions: the runtime called the handler at &852c,
+    but that word is LemProg's *chain pointer* - the installer at &84f4
+    saves the old [&100] there and installs &8530. Once the word held a
+    real address, every call (twice a frame) sent it through the
+    interpreter as an instruction. hw_irq_frame() now calls whatever is
+    actually installed at &100, as the kernel would (&8530 for LemProg,
+    LemBoot's relocated &4080c during --boot). &2a6c4 restores [&100]
+    from &852c just before OS_Exit.
+  - Split palette: on vsync (IOC IRQA bit 3), &8530 pushes the top palette
+    ([&83e0]) and loads IOC timer 1 from [&84f0]. When the timer fires
+    (bit 6), it pushes the panel palette ([&83e4]). The latch is &7500 on
+    the title screen and in-game, and &4200 on the briefing screen (the
+    two constants at &8008/&800c). The display now uses the top palette
+    for lines above (latch+1)/128 - 56 (2MHz timer, 64us lines, 56 flyback
+    lines before line 0): line 178 in-game, line 76 on the briefing. Both
+    fall inside blank bands on screen (rows 175-184 / 72-79), so the model
+    is consistent. Level colours, including the briefing mini-map, are now
+    correct.

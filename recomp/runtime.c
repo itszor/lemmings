@@ -35,6 +35,7 @@
 #define HANDLER_RET  0x3FFFFE0u
 #define TICK_STEPS   20000
 #define VSYNC_STEPS  40000
+#define SPLIT_FLYBACK 56        /* see hw_irq_frame() */
 #define LOAD         0x8000u
 
 uint32_t R[16];
@@ -69,6 +70,7 @@ static fn_t *entry_tab;                 /* direct-mapped: (a - LOAD) >> 2 */
 static fn_t *entry_tab_boot, *entry_tab_game;
 static const uint8_t *codemap_boot, *codemap_game;
 static uint32_t img_end_boot, img_end_game;
+static uint32_t events_enabled;         /* OS_Byte 14/13: enable/disable event N */
 static int boot_mode;                   /* 1 while running LemBoot's own code */
 static int boot_loaded_lemprog;         /* set by os_file() when it just served LemProg */
 static const char *appdir = "../extracted/!LEMMINGS";
@@ -173,11 +175,9 @@ static void dump_pchist(void)
  * Rather than reverse-engineer that kernel internal, call it ourselves.
  *
  * LemBoot installs its own, address-different analogue the same way (see
- * &87d0-&8804, found during --boot bring-up): its palette/IOC routine is
- * at &880c, not &852c, but the install is the exact same "write into low
- * workspace &100, which nothing in our runtime ever reads" pattern - so
- * this helper takes the target address as a parameter instead of being
- * hardcoded to LemProg's &852c. */
+ * &87d0-&8804). hw_irq_frame() below calls whichever handler is currently
+ * installed at &100 (LemProg's real entry is &8530: install code is at
+ * &84f4, and &852c is the saved chain word). */
 static void run_until(uint32_t stop);
 static void finish(const char *why) __attribute__((noreturn));
 static void call_hw_handler(uint32_t addr, uint32_t ioc14, uint32_t ioc24)
@@ -208,6 +208,47 @@ static void call_hw_handler(uint32_t addr, uint32_t ioc14, uint32_t ioc24)
     memcpy(R, saved, sizeof R);
     NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
     npc = snpc;
+}
+
+/* One frame's worth of the direct hardware-IRQ handler that LemBoot
+ * (&87d0) and LemProg (&84f4) each install by writing its address into
+ * low workspace &100 - a kernel dispatch slot we don't otherwise emulate -
+ * after saving the old value as their own chain word. Call whatever is
+ * installed there, as the kernel would: LemProg's is &8530 (the word at
+ * &852c is its saved chain pointer, not code - calling &852c used to send
+ * it through the interpreter once the chain held a real address, e.g.
+ * LemBoot's handler on a --boot run); LemBoot's is &4080c (its relocated
+ * copy - see pc_bias).
+ *
+ * The handlers are written for two interrupt sources: IOC IRQ A bit 3
+ * (vsync/flyback) builds and pushes the top palette, and - LemProg only -
+ * programs IOC timer 1 (latch at &3200050/54) to fire part way down the
+ * frame, where bit 6 (timer 1) pushes a second palette for the rest of
+ * the screen (the panel). We call both once per frame and hand the
+ * display the first palette plus the line the timer would fire at. */
+uint32_t vidc_palette_top[16];
+int palette_split;
+static void hw_irq_frame(void)
+{
+    uint32_t a = RD32(0x100);
+    if (!a) return;
+    if (boot_mode && a >= 0x40000 && a < 0x40000 + (img_end_boot - LOAD)) a -= 0x38000;
+    MEM[0x3200050] = MEM[0x3200054] = 0;
+    call_hw_handler(a, 0x8, 0);
+    uint32_t latch = MEM[0x3200050] | MEM[0x3200054] << 8;
+    memcpy(vidc_palette_top, vidc_palette, sizeof vidc_palette_top);
+    call_hw_handler(a, 0x40, 0);       /* always: it also clears &852c's re-entry gate (&85fc) */
+    if (!latch) { palette_split = 0; return; }
+    /* IOC timers count at 2MHz; a line is 64us (128 ticks), and the
+     * flyback interrupt arrives SPLIT_FLYBACK lines before line 0. */
+    int line = (int)((latch + 1) / 128) - SPLIT_FLYBACK;
+    palette_split = line < 0 ? 0 : line > 256 ? 256 : line;
+    static uint32_t last_latch;
+    if (latch != last_latch) {
+        last_latch = latch;
+        fprintf(stderr, "palette split: timer latch %#x -> line %d (icount %llu)\n",
+                latch, palette_split, (unsigned long long)icount);
+    }
 }
 
 uint32_t os_write_bank_addr(void) { return SCREEN + bank * 0xA000; }
@@ -451,6 +492,11 @@ static void recompute_irq(void)
 
 static void call_vector(unsigned vec, int nregs, const uint32_t *regs)
 {
+    /* Events only reach EventV once enabled with OS_Byte 14. LemProg only
+     * enables event 4 (vsync) - its handler (&2a70c) doesn't check the
+     * event number, so dispatching our mouse event (10) too counted every
+     * click as an extra frame tick. */
+    if (vec == 0x10 && !(events_enabled & (1u << (regs[0] & 31)))) return;
     if (vec >= 0x20 || !vectors[vec].set) return;
     uint32_t saved[16], sf[4] = {NF, ZF, CF, VF}, snpc = npc;
     memcpy(saved, R, sizeof R);
@@ -506,7 +552,6 @@ static void rt_service(int vsync_now)
     }
     if (vsync_now || now >= next_vsync_ns) {
         next_vsync_ns += 2 * CS_NS;
-        if (!boot_mode) WR32(0x2a5b0, RD32(0x2a5b0) + 1);  /* see README: vsync tick counter (LemProg-specific address) */
         display_poll();
         if (nscript) run_script();
         if (screenshot_requested) {
@@ -519,23 +564,7 @@ static void rt_service(int vsync_now)
         if (quit_requested) finish("window closed");
         display_present(displayed(), screen_width());
         monotonic += 2;
-        if (!boot_mode) {
-            call_hw_handler(0x852c, 0x8, 0);   /* IOC14 bit3: build the palette table (F_8618 chain) */
-            call_hw_handler(0x852c, 0x40, 0);  /* IOC14 bit6: push that table's values to VIDC */
-        } else {
-            /* LemBoot's own analogue, installed at &100 the same way - see
-             * &87d0-&8804. Never actually invoked by anything else, same
-             * as LemProg's &852c before this fix. Its &87c4/&87c8 gates
-             * are fade-in/fade-out requests: LemBoot sets one to &ff
-             * (e.g. via the &407c8 literal at &8a2c) and busy-waits;
-             * &88bc/&8914 step the fade each call and clear the flag
-             * themselves once it's complete. (These used to be faked
-             * here - kicked to 1 before, cleared each vsync - only
-             * because the PC-relative and absolute views of them didn't
-             * agree before pc_bias; see call_addr().) */
-            call_hw_handler(0x880c, 0x8, 0);
-            call_hw_handler(0x880c, 0x40, 0);
-        }
+        hw_irq_frame();
         /* &84e8/&84ec are LemProg's fade-in/fade-out requests (the exact
          * analogue of LemBoot's &87c4/&87c8): set to &ff by the game, which
          * then busy-waits; &8650/&86ac step the fade once per &852c call
@@ -577,11 +606,7 @@ void irq_point(void)
     if (icount >= next_vsync) {
         next_vsync += VSYNC_STEPS;
         monotonic += 2;
-        if (!boot_mode) WR32(0x2a5b0, RD32(0x2a5b0) + 1);  /* see README: vsync tick counter (LemProg-specific address) */
-        /* see rt_service(): fades only progress (and finish) via the handler */
-        uint32_t hw = boot_mode ? 0x880c : 0x852c;
-        call_hw_handler(hw, 0x8, 0);
-        call_hw_handler(hw, 0x40, 0);
+        hw_irq_frame();
         uint32_t r[2] = {4, 0};
         call_vector(0x10, 2, r);
     }
@@ -720,6 +745,12 @@ static void os_byte(void)
         uint32_t b = (R[1] >= 1 ? R[1] - 1 : 0) & 1;
         if (op == 112) bank = b; else display_bank = b;
         ev("OS_Byte", "ii", op, R[1]);
+        return;
+    }
+    if (op == 13 || op == 14) {                       /* disable / enable event */
+        uint32_t m = 1u << (R[1] & 31);
+        R[1] = (events_enabled & m) ? 1 : 0;             /* old state */
+        if (op == 14) events_enabled |= m; else events_enabled &= ~m;
         return;
     }
     if (op == 19) { if (interactive) wait_vsync(); else monotonic++; return; }
