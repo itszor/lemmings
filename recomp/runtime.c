@@ -175,17 +175,24 @@ static void dump_pchist(void)
  * (&2a688-&2a6e4) writes into absolute low workspace &100, not through
  * OS_Claim/Event_V like &2a70c - almost certainly a lower-level, direct
  * hardware-IRQ dispatch slot the kernel itself reads that we don't emulate.
- * Rather than reverse-engineer that kernel internal, call it ourselves. */
+ * Rather than reverse-engineer that kernel internal, call it ourselves.
+ *
+ * LemBoot installs its own, address-different analogue the same way (see
+ * &87d0-&8804, found during --boot bring-up): its palette/IOC routine is
+ * at &880c, not &852c, but the install is the exact same "write into low
+ * workspace &100, which nothing in our runtime ever reads" pattern - so
+ * this helper takes the target address as a parameter instead of being
+ * hardcoded to LemProg's &852c. */
 static void run_until(uint32_t stop);
-static void call_852c(uint32_t ioc14, uint32_t ioc24)
+static void call_hw_handler(uint32_t addr, uint32_t ioc14, uint32_t ioc24)
 {
-    if (!(0x8000 <= 0x852c && 0x852c < img_end && entry_tab[(0x852c - LOAD) >> 2])) return;
+    if (!(0x8000 <= addr && addr < img_end && entry_tab[(addr - LOAD) >> 2])) return;
     WR32(0x3200014, ioc14);
     WR32(0x3200024, ioc24);
     uint32_t saved[16], sf[4] = {NF, ZF, CF, VF}, snpc = npc;
     memcpy(saved, R, sizeof R);
     R[14] = HANDLER_RET;
-    npc = 0x852c;
+    npc = addr;
     in_handler = 1;
     run_until(HANDLER_RET);
     in_handler = 0;
@@ -336,7 +343,7 @@ void call_addr(uint32_t a)
     /* spec_852c's "bit3" path doesn't return via R14 - it re-reads its own
      * first word (&852c, statically 0) as a chain-vector and jumps there,
      * expecting the real low-level kernel IRQ-chain installer (&2a688-
-     * &2a6e4, into low workspace &100 - never emulated, see call_852c())
+     * &2a6e4, into low workspace &100 - never emulated, see call_hw_handler())
      * to have patched it with the next handler's address. Unpatched, that's
      * a jump to address 0 - treat "nothing chained" as end-of-chain/return
      * rather than crashing, same spirit as the &84e8/&2a5b0 fixes. */
@@ -455,13 +462,19 @@ static void rt_service(int vsync_now)
         display_present(displayed(), 640);
         monotonic += 2;
         if (!boot_mode) {
-            call_852c(0x8, 0);     /* IOC14 bit3: build the palette table (F_8618 chain) */
-            call_852c(0x40, 0);    /* IOC14 bit6: push that table's values to VIDC */
+            call_hw_handler(0x852c, 0x8, 0);   /* IOC14 bit3: build the palette table (F_8618 chain) */
+            call_hw_handler(0x852c, 0x40, 0);  /* IOC14 bit6: push that table's values to VIDC */
+        } else {
+            /* LemBoot's own analogue, installed at &100 the same way - see
+             * &87d0-&8804. Never actually invoked by anything else, same
+             * as LemProg's &852c before this fix. */
+            call_hw_handler(0x880c, 0x8, 0);
+            call_hw_handler(0x880c, 0x40, 0);
         }
         /* &84e8/&84ec: a generic hardware-completion pair, set to &ff by
          * "kick" sites and polled by busy-waits all over the code (see
          * README) - but also read as a plain nonzero/zero "pending work"
-         * flag by F_8618's gate checks just above (call_852c's build
+         * flag by F_8618's gate checks just above (call_hw_handler's build
          * path). Previously treated as a no-op write to unblock the
          * busy-waits, which also silently broke the flag for every reader
          * like F_8618 that actually needs to see it go nonzero. Instead:
