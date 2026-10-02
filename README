@@ -498,3 +498,164 @@ how we model the program's memory layout. Needs figuring out what &8008
 is really supposed to contain (and by what mechanism) before this can be
 fixed properly - left open rather than guessed at, given the last
 "obvious-looking" guess (spec_852c) turned out to be completely wrong.
+
+UPDATE - &8008 hypothesis debunked, real second bug found and fixed (but
+didn't fully solve the scrambling). Fully emulated LemBoot's *real*
+startup with arm2.py (tools/unpack_lemboot.py's targeted call into the
+LemProg loader at &8aac, then just kept stepping past its return instead
+of stopping there) all the way through to LemProg's true entry at &8000 ->
+&192ac. &8008 is never touched anywhere in that trace - confirmed it's not
+a LemBoot-provided pointer at all. The earlier guessed patch
+(WR32(0x8008, 0x6a83c)) was accordingly removed; it never did anything
+useful (matches the "no visible change" observed when it was tried).
+
+Kept stepping the same emulation further into LemProg's own init code and
+caught the *real* write to &8008: at &1930c, part of a loop that zero-
+fills &14000 bytes starting from a pointer obtained via OS_ReadVduVariables
+(SWI &31) for variable &95/149 (screen bank address). Our runtime already
+implements SWI &31 correctly (confirmed: the real binary's first
+watch_write is `pc=19308 wrote 0 -> [01b80000]`, exactly SCREEN) - the
+&8008 write only ever showed up in a *throwaway test harness* whose SWI &31
+stub was a no-op, leaving its output buffer at its static-image value of 0
+and making the zero-loop target address 0 instead of the real screen
+address. Not a bug in the real runtime at all - a red herring produced by
+incomplete test-harness emulation. &8008 itself is just an incidental
+address the zero-loop passes through on a *real* RISC OS where the first
+screen bank happens to be low memory; irrelevant here since our SCREEN is
+nowhere near it.
+
+While chasing that, found what *is* a real runtime bug: with the &8008
+patch removed, instruction budgets up to 200M still showed the CPU stuck
+spinning at &2a598-&2a5a0 (tens of millions of iterations and climbing) -
+a tiny loop (function F_dc48) that zeroes a data word at &2a5b0, then
+busy-waits re-reading that same word until it's >=1, then clears it again
+and returns. A second, similar consumer exists at &2a560 (F_2a560: wait
+until the word at &2a5b0 reaches a threshold read from an object field,
+then reset to 0) - i.e. &2a5b0 behaves like a free-running vsync-tick
+counter that's meant to be incremented by the OS and consumed/reset by
+callers waiting for "at least N more ticks". Searched the entire static
+image (literal-word search and PC-relative-base arithmetic over every
+STR_ site in the generated C) for anything that increments or even
+references &2a5b0 by address - nothing: the only two writers are the two
+consumers above, both of which only ever *reset* it to 0. The real
+increment must come from RISC OS's own Vsync/timer servicing, which our
+runtime does claim (OS_Claim for vector &10/Event is logged early, at
+icount 69755) but the claimed handler chain (&2a70c -> F_2a5b4 et al.)
+turned out to increment a *different* jiffy counter (&2a5d0), not &2a5b0 -
+so nothing in the game's own translated code was ever going to set it.
+
+Fixed by incrementing &2a5b0 once per emulated vsync tick directly in
+runtime.c's irq_point()/rt_service(), the same hardcoded-special-case
+style already established for &84e8/&84ec in WR32(). Confirmed this
+actually fixed the hang and not just moved it: the loop's dominant
+instruction-count share (pchist showing 1 billion+ hits at 50M instr/sec
+emulation speed vs. 50Hz real vsync pacing) is fully explained by
+busy-waiting for the next *real* vsync tick, not an unsatisfiable
+condition - the per-wait iteration count (~1.7M) x number of waits over a
+12s run (~608) lines up almost exactly with 50Hz x 12s.
+
+This did *not*, however, fix the reported scrambled screen - a screenshot
+taken after this fix (SDL_VIDEODRIVER=dummy, --script shot) still shows
+the same comb/grid garbage pattern as scrambled.png (lost in this
+session's own working directory - re-requested from the user). So the
+scrambling has (at least) two separate contributing causes; the &2a5b0 fix
+is real and worth keeping (it was a genuine infinite-hang bug).
+
+UPDATE - the &8008 trail above was a dead end from a false premise, now
+closed. Disassembling &192d4-&192e8 directly (the code that reads &8008)
+shows: SWI &6 (OS_Byte), then F_8074 (a literal-thunk helper, R8 = its
+*own* literal operand, i.e. "R8 = an address", not a further indirection)
+with literal &8008 -> R8=&8008, `LDR R0,[R8]` (R0 = the word at &8008,
+0x7500), then F_8074 again with literal &84f0 -> R8=&84f0, then
+`STR R0,[R8]` - i.e. this code's actual job is `*(&84f0) = *(&8008)`, a
+straight copy of a compile-time constant from one fixed data word to
+another. &8008/&800c (0x7500/0x4200) are literal data words placed right
+after the entry branch at &8000 (standard "data immediately follows the
+branch, since nothing ever falls through to it" placement for absolute
+RISC OS images), not a RISC-OS-supplied workspace pointer at all. There
+was never anything to fix here - the value was always correct as shipped.
+
+Went looking for the scrambled screen's real cause directly: the copy at
+&e1e0-&e228 reads from fp+&124 (confirmed, by reading &19360 directly,
+to be set once at startup to the real SCREEN pointer, +&2080) - and the
+`0xdddddddd` watch-write we'd caught earlier lands exactly inside that
+same source range (SCREEN+&21fc). So the "garbage" is being written
+straight into live screen memory by a bitstream-unpack loop (&2a3d4: an
+8-bit shift-extract, classic LZ/RLE decode inner loop) shortly before the
+copy reads it back out - not an unrelated stale buffer. Ran a 60-real-
+second (15+ billion instruction) soak test to check whether this was
+just a slow progressive reveal we hadn't waited long enough for: it
+isn't - every screen-memory write happens within the first ~15M
+instructions (a few hundred ms equivalent) and then nothing new is ever
+written again, while the CPU spends the rest of the run legitimately
+vsync-pacing (confirmed: the &2a598 loop's billions of iterations scale
+exactly with 50Hz x real elapsed seconds, not stuck). So whatever's being
+decoded there finishes (or gives up) almost immediately and the result is
+final - "just wait longer" is ruled out.
+
+FOUND AND FIXED a second genuine bug this way, unrelated to the above:
+the rendered comb/grid pattern turned out to be real decoded pixel data,
+not noise - but only ever shown in two colours (dark red/black) because
+our OS_Word 12 (write palette entry) handler was reading the RGB triple
+from the wrong block offsets. Checked two independent real callers
+directly in the disassembly - F_8178 (single-colour helper) and F_8234
+(the real 16-colour palette loop, counter 0x10 down to 0, SWI &7 each
+iteration) - both write red/green/blue to parameter-block offsets 2/3/4
+and leave offset 1 untouched, i.e. the real format is {colour, unused,
+R, G, B}. Our handler read blk[1..3] as R/G/B (one offset short),
+silently absorbing the unused byte as "red", shifting real red into our
+"green" slot and real green into our "blue" slot, and never reading real
+blue at all. Fixed in swi() case 7 to read blk[2..4]. Confirmed via a
+temporary per-call log (`palette: colour N = #RRGGBB (icount ...)`) that
+colour 0 now resolves to its correct value.
+
+That fix is real and necessary, but on its own doesn't finish the job:
+after it, another 60-second soak shows *only* colour 0 (now correctly
+black) ever gets set, called once per vsync from what looks like a
+single-colour helper (F_8178) - the real 16-colour loop (F_8234) never
+fires even once. So there's still something gating progress into full
+palette setup/whatever triggers it, separate from both bugs fixed so far.
+Screen is now plain black (both the real colour-0 and the
+still-unprogrammed colours 1-15 happen to coincide at black) rather than
+showing the old red/black pattern - visually worse-looking but more
+informative, since it confirms colour 0's *value* is now right.
+
+Chased F_8234 (really inside F_8210 - F_8234 is just a later label/entry
+point within the same function, not a separate routine) further: it has
+*zero* static callers anywhere in the translated code, and zero literal-
+pool references to its address &8210 anywhere in LemProg.bin either -
+the same "completely unreferenced" signature spec_852c had, which turned
+out to be genuinely dead code. Checked the other candidate explanations
+before concluding the same here:
+  - F_8178 (the single-colour helper actually being called every vsync)
+    always targets colour 0 *by design*, not a bug: its parameter block
+    is one fixed shared buffer (literal address &8198), and blk[0]
+    (colour) is never written by any caller - it just keeps its static-
+    image value, which is 0. All 4 real call sites of F_8178 (found via
+    direct search for "CALL(F_8178,...)") pass fixed R2/R3/R4 (one of
+    them literally 0/0/0 - "flash to black"), never a variable colour.
+    So this is consistently a colour-0-only effect across the board, not
+    evidence of a bug in F_8178 or its callers.
+  - Considered whether the missing colours arrive via a VDU 19
+    (ChangePalette) byte-stream instead of OS_Word 12 - RISC OS's other
+    standard palette-setting path, and one our VDU driver (vdu.c) doesn't
+    implement at all (full stub, just counts unhandled bytes). Ruled
+    out: a full 16-colour VDU 19 sequence needs ~96 bytes, but a 60-
+    second soak (with a "Start Game" click at 5s) only ever sees 3
+    unhandled VDU bytes total, nowhere near enough.
+
+So, unresolved: F_8210/F_8234 looks for all the world like dead code
+(maybe an earlier/alternate palette-loading approach superseded by the
+one-colour-at-a-time F_8178 mechanism, or code for a different screen/
+mode this build never reaches), and nothing else found yet accounts for
+how colours 1-15 are meant to get set. Possibilities not yet checked:
+whether the "Start Game" click (scripted at 5s above, confirmed to
+unblock *something* - new screen-memory writes appear around icount 1.27
+billion that don't happen without it) leads somewhere past our 60-second
+window if given more real time or the right further input; whether
+there's a third palette-setting path (another OS_Word 12 call site we
+haven't found, or direct VIDC register writes gated behind a condition
+we haven't met - recall spec_852c itself was VIDC-register-based and
+*is* real RISC OS hardware, just seemingly unused by this build); or
+whether the comb/grid pattern is in fact supposed to stay monochrome at
+this stage and the still-missing piece is elsewhere entirely. Left open.

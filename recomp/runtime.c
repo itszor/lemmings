@@ -384,6 +384,7 @@ static void rt_service(int vsync_now)
     }
     if (vsync_now || now >= next_vsync_ns) {
         next_vsync_ns += 2 * CS_NS;
+        WR32(0x2a5b0, RD32(0x2a5b0) + 1);  /* see README: vsync tick counter */
         display_poll();
         if (nscript) run_script();
         if (screenshot_requested) {
@@ -434,6 +435,7 @@ void irq_point(void)
     if (icount >= next_vsync) {
         next_vsync += VSYNC_STEPS;
         monotonic += 2;
+        WR32(0x2a5b0, RD32(0x2a5b0) + 1);  /* see README: vsync tick counter */
         uint32_t r[2] = {4, 0};
         call_vector(0x10, 2, r);
     }
@@ -683,9 +685,16 @@ void swi(uint32_t n, uint32_t nextpc)
         uint8_t *blk = MEM + R[1];
         if (interactive && R[0] == 21 && blk[0] == 3)       /* set mouse position */
             display_set_mouse((int16_t)(blk[1] | blk[2] << 8), (int16_t)(blk[3] | blk[4] << 8));
-        if (R[0] == 12) {                                    /* OS_Word 12: write palette entry */
+        if (R[0] == 12) {                                    /* OS_Word 12: write palette entry.
+             * Block is {colour, flag/unused, red, green, blue} - confirmed
+             * against two real callers (F_8178, F_8234's 16-colour loop)
+             * which both write R/G/B to offsets 2/3/4, leaving offset 1
+             * untouched. Reading R/G/B from 1/2/3 (one off) was why only
+             * colour 0 ever appeared to be set correctly - see README. */
             unsigned colour = blk[0] & 0xF;                   /* logical colour 0-15 (4bpp) */
-            vidc_palette[colour] = blk[1] | (uint32_t)blk[2] << 8 | (uint32_t)blk[3] << 16;
+            vidc_palette[colour] = blk[2] | (uint32_t)blk[3] << 8 | (uint32_t)blk[4] << 16;
+            fprintf(stderr, "palette: colour %u = #%06x (icount %llu)\n",
+                    colour, vidc_palette[colour], (unsigned long long)icount);
         }
         if (R[0] == 21 && blk[0] == 0)
             ev("OS_Word", "isi", R[0], blk, 6, blk[6] | blk[7] << 8 | blk[8] << 16 | (uint32_t)blk[9] << 24);
