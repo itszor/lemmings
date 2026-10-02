@@ -184,6 +184,7 @@ static void dump_pchist(void)
  * this helper takes the target address as a parameter instead of being
  * hardcoded to LemProg's &852c. */
 static void run_until(uint32_t stop);
+static void finish(const char *why) __attribute__((noreturn));
 static void call_hw_handler(uint32_t addr, uint32_t ioc14, uint32_t ioc24)
 {
     if (!(0x8000 <= addr && addr < img_end && entry_tab[(addr - LOAD) >> 2])) return;
@@ -194,7 +195,20 @@ static void call_hw_handler(uint32_t addr, uint32_t ioc14, uint32_t ioc24)
     R[14] = HANDLER_RET;
     npc = addr;
     in_handler = 1;
-    run_until(HANDLER_RET);
+    /* irq_point() (where --limit/instruction-count safety normally lives)
+     * early-returns while in_handler, so a genuine infinite loop inside a
+     * synthetically-called handler would otherwise hang forever and
+     * nothing would stop it. Bound it defensively instead. */
+    uint64_t hw_i0 = icount;
+    while (npc != HANDLER_RET) {
+        if (npc == RETURN_TO_OS) finish("returned to OS");
+        if (icount - hw_i0 > 5000000) {
+            fprintf(stderr, "call_hw_handler(%08x): bailing out after 5M instructions, pc=%08x\n",
+                    addr, npc);
+            break;
+        }
+        call_addr(npc);
+    }
     in_handler = 0;
     memcpy(R, saved, sizeof R);
     NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
@@ -306,7 +320,15 @@ static int seen_gap(uint32_t a)
 void call_addr(uint32_t a)
 {
     if (a == RETURN_TO_OS) finish("returned to OS");
-    if (boot_mode && a >= 0x40000 && a < 0x40000 + (img_end_boot - LOAD)) {
+    /* The boot_mode redirects below (relocated-copy remap, post-unpack
+     * vector-area walk) are specifically for LemBoot's own main _start
+     * flow - they must not apply inside a synthetic call_hw_handler()
+     * call (e.g. LemBoot's own &880c, same unpatched-&100-chain-return
+     * idiom as LemProg's &852c), or a chain-vector return to a low
+     * address gets misrouted into LemBoot's real _start and loops
+     * forever instead of ending the call. The generic "in_handler and
+     * nothing resolves" catch-all below handles those cases instead. */
+    if (!in_handler && boot_mode && a >= 0x40000 && a < 0x40000 + (img_end_boot - LOAD)) {
         /* LemBoot copies its first &2000 bytes from &8000 to &40000 and
          * continues running from there (see the loop at &8010-&802c) -
          * real hardware needs this so it can safely OS_File-load the next
@@ -321,7 +343,7 @@ void call_addr(uint32_t a)
         a -= 0x38000;
         npc = a;
     }
-    if (boot_mode && a < LOAD) {
+    if (!in_handler && boot_mode && a < LOAD) {
         /* LemBoot's post-unpack "return" from the shared loader (&8aac et
          * al) goes through the real hardware vector area (&0-&34) via a
          * push-pc/pop-pc trick, relying on however the kernel's vectors
@@ -340,14 +362,20 @@ void call_addr(uint32_t a)
     fn_t f = (!interp_only && a >= LOAD && a < img_end) ? entry_tab[(a - LOAD) >> 2] : 0;
     if (f) { f(a); return; }
     if (a == HANDLER_RET) return;
-    /* spec_852c's "bit3" path doesn't return via R14 - it re-reads its own
-     * first word (&852c, statically 0) as a chain-vector and jumps there,
-     * expecting the real low-level kernel IRQ-chain installer (&2a688-
-     * &2a6e4, into low workspace &100 - never emulated, see call_hw_handler())
-     * to have patched it with the next handler's address. Unpatched, that's
-     * a jump to address 0 - treat "nothing chained" as end-of-chain/return
-     * rather than crashing, same spirit as the &84e8/&2a5b0 fixes. */
-    if (in_handler && a == 0) { npc = HANDLER_RET; return; }
+    if (in_handler) {
+        /* A synthetic call_hw_handler() call landed somewhere we can't
+         * resolve. On real hardware these routines run as asynchronous
+         * IRQ handlers that can interrupt *anything*, including another
+         * asset's own decompression loop mid-write - we're injecting the
+         * call ourselves outside the game's real timing, so we can't
+         * assume the chain-vector/table data it reads is always sane at
+         * the moment we chose to call it (confirmed: a stale &100-chain
+         * read landed mid-write in a decompression target once already).
+         * Safest is to just end this one invocation and try again next
+         * vsync, rather than crash the whole emulation over it. */
+        npc = HANDLER_RET;
+        return;
+    }
     if (trace_gaps) {
         if (!seen_gap(a)) log_untranslated_branch(a);
         interp_step();
@@ -467,7 +495,17 @@ static void rt_service(int vsync_now)
         } else {
             /* LemBoot's own analogue, installed at &100 the same way - see
              * &87d0-&8804. Never actually invoked by anything else, same
-             * as LemProg's &852c before this fix. */
+             * as LemProg's &852c before this fix. Its own build step
+             * (&8884) gates on &87c4/&87c8 being nonzero - unlike
+             * LemProg's equivalent gates, these start at zero in the
+             * static image and nothing ever sets them (same two
+             * addresses as the generic hardware-completion busy-wait
+             * below, just never kicked for real on this path), so the
+             * build never ran even with that busy-wait fixed. Kick them
+             * ourselves right before calling, so &8884 sees "pending
+             * work" once per vsync; the existing clear below consumes it
+             * afterwards, same as real hardware would. */
+            WR32(0x87c4, 1); WR32(0x87c8, 1);
             call_hw_handler(0x880c, 0x8, 0);
             call_hw_handler(0x880c, 0x40, 0);
         }

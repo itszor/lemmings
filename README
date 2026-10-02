@@ -969,3 +969,68 @@ skipping a step rather than genuinely waiting one out. Next step would be
 the same technique used for &19388/&82c0: find what *should* branch into
 the display routine (most likely another indirect/relocated jump) and
 seed it explicitly.
+
+UPDATE - found the real reason the logo was never reached (not another
+unseeded entry point) and made real progress, though the logo still
+doesn't fully render. The first clue was in the event log: right before
+Krisalis loads, there's an unhandled `SWI &20016` (X-flagged OS_EnterOS)
+with R1 pointing at &880c. Reading the real code at &87d0-&8804 (its
+caller) showed why: it's LemBoot's own install of an analogue to
+LemProg's &852c palette routine, written into the exact same never-
+emulated low-workspace &100 direct-hardware-IRQ slot (same install
+pattern, different target address - &880c instead of &852c). Confirmed
+by reading &880c itself: same IOC14/IOC24-gated structure, same VIDC
+write loop, same chain-vector return via an unpatched address. Nothing
+was ever going to call it, same as LemProg's &852c before that was fixed
+with call_852c().
+
+Generalised call_852c() into call_hw_handler(addr, ioc14, ioc24) and
+wired up LemBoot's &880c the same way during boot_mode. This surfaced
+two real bugs in the existing boot_mode handling, both fixed:
+  - Priority bug: call_addr()'s boot_mode redirects (relocated-copy remap,
+    post-unpack vector-walk) ran *before* the in_handler chain-return
+    check, so a legitimate "end this synthetic handler call" jump to
+    address 0 from inside call_hw_handler got caught by the "redirect low
+    addresses to LOAD" boot_mode logic instead - looping LemBoot's real
+    _start forever (&880c -> 0 -> &8000 -> &880c -> ...). Fixed by
+    excluding in_handler from those boot_mode checks entirely, and
+    broadening the exit condition to "any address in_handler can't
+    resolve", not just exactly 0 - these handler calls are injected
+    outside the game's real timing (real hardware would call &880c
+    asynchronously, on a genuine VSYNC IRQ, which can interrupt *anything*
+    - including another asset's decompression loop mid-write), so the
+    chain-vector/table data they read can't be assumed sane at the moment
+    we chose to call them. Confirmed necessary: a stale chain read did
+    land mid-write in a decompression target once during bring-up.
+  - Added a defensive instruction-count bound inside call_hw_handler()
+    itself: irq_point() (where --limit's safety net normally lives)
+    early-returns while in_handler, so a genuine infinite loop inside a
+    synthetic handler call would otherwise hang forever with nothing to
+    stop it - confirmed this really happened before the priority-bug fix
+    above (>200M instructions stuck in the &880c/0/&8000 cycle).
+  - &880c's own build step (&8884) gates on &87c4/&87c8 being nonzero -
+    the *same* two addresses as the generic hardware-completion busy-wait
+    pair already fixed, but unlike LemProg's analogous gates (which were
+    already nonzero by default in the static image), LemBoot's start at
+    zero and nothing ever sets them for real. Fixed by kicking them to 1
+    ourselves right before calling &880c; the existing periodic clear
+    consumes it afterwards, same spirit as everywhere else in this file.
+
+Result: runs clean under --boot, no crash, no hang, no regression to
+default (non---boot) behaviour. And real progress: vidc.log shows a
+genuine non-zero write for the first time ever from LemBoot's own code -
+`VIDC reg 0 = 0xff` - confirming the whole chain (install detection,
+call_hw_handler, the gate kick) now actually reaches and executes &880c's
+VIDC-write loop with real data, not just zeroes. Not fully there yet,
+though: it's a brief, two-entry flash that doesn't survive to any
+screenshot (tried several, spread across a 17-second run) - the logo
+never visibly appears. Most likely explanation, by direct analogy with
+the *exact* unresolved LemProg mystery documented above: &880c's build
+routine (&88bc, structurally identical to LemProg's F_86ac) zeroes a
+"current" table and fades it toward a "target" table that's itself
+unpopulated in LemBoot's static image too - the brief 0xff is plausibly
+a transient/uninitialised value during the very first pass, settling
+back to the zeroed default once the fade has nothing real to move
+toward. Finding what's supposed to write LemBoot's target table (same
+open question as LemProg's &8468, just LemBoot's own address) is the
+clear next step.
