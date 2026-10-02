@@ -407,6 +407,17 @@ static void rt_service(int vsync_now)
         monotonic += 2;
         call_852c(0x8, 0);     /* IOC14 bit3: build the palette table (F_8618 chain) */
         call_852c(0x40, 0);    /* IOC14 bit6: push that table's values to VIDC */
+        /* &84e8/&84ec: a generic hardware-completion pair, set to &ff by
+         * "kick" sites and polled by busy-waits all over the code (see
+         * README) - but also read as a plain nonzero/zero "pending work"
+         * flag by F_8618's gate checks just above (call_852c's build
+         * path). Previously treated as a no-op write to unblock the
+         * busy-waits, which also silently broke the flag for every reader
+         * like F_8618 that actually needs to see it go nonzero. Instead:
+         * let writes land for real, and clear them here (bounded to at
+         * most one vsync period for any busy-wait), same spirit as the
+         * &2a5b0 tick-counter fix. */
+        WR32(0x84e8, 0); WR32(0x84ec, 0);
         uint32_t r[2] = {4, 0};
         call_vector(0x10, 2, r);
         if (mouse_buttons != last_buttons) {
@@ -443,6 +454,7 @@ void irq_point(void)
         next_vsync += VSYNC_STEPS;
         monotonic += 2;
         WR32(0x2a5b0, RD32(0x2a5b0) + 1);  /* see README: vsync tick counter */
+        WR32(0x84e8, 0); WR32(0x84ec, 0);  /* see rt_service(): bounded hw-completion clear */
         uint32_t r[2] = {4, 0};
         call_vector(0x10, 2, r);
     }

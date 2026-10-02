@@ -785,3 +785,67 @@ that's never been traced (see item 5 in the status list), the most likely
 next step is tracing whatever writes &8468+ - probably reachable only
 from the level-loading code, not the title/panel-screen init path this
 whole investigation has focused on so far.
+
+UPDATE - found it without needing to trace the level loader: added a
+watchpoint on &8468-&84e7 directly (the same watch_write() mechanism used
+throughout this investigation) and it turned out to be written early and
+repeatedly, with real plausible-looking packed-nibble RGB values, from pc
+&198c4 - part of the title/panel init path after all, not level-loading.
+So the target table *was* being populated; something else was still
+blocking F_86ac from ever using it.
+
+Found that something by tracing spec_852c's actual register values at
+its three gate checks (F_8618 entry, and the two conditional-call sites
+for F_8650/F_86ac): both gates read as flat zero, every single time -
+despite their *static* image values being nonzero. Recomputed their real
+addresses properly this time (previously assumed PC-relative ADD without
+checking the U/subtract flag, same mistake as the earlier &820c red
+herring) - they're not independent flag words at all, they're &84e8 and
+&84ec. The exact same hardware-completion pair this project already
+special-cased in WR32 to fix the original "stuck in an unemulated
+hardware-completion wait" hang (see much earlier in this file) - but
+that fix made *writes* to those addresses complete no-ops, so they could
+never become nonzero for *any* reader, including this completely
+different consumer that was never involved in the original hang. One
+fix for one problem silently broke a second, unrelated piece of code
+that happened to share the same two memory addresses for a different
+purpose.
+
+Fixed properly: writes to &84e8/&84ec now land for real again (removed
+the no-op special case from WR32), and runtime.c clears both once per
+vsync tick instead (in both rt_service() and headless irq_point(), same
+spot as the &2a5b0 tick-counter fix) - bounding any busy-wait to at most
+one vsync period while leaving the flag genuinely visible as nonzero to
+readers like F_8618 for the rest of that period. Confirmed both
+purposes now work from the same run: vidc.log shows real nonzero palette
+values landing (registers 3/4/5 reaching small but genuinely non-black
+RGB values, e.g. register 4 = &11), and no regression in the original
+hang (60-second soaks still complete cleanly, no hang, no crash).
+
+Not fully resolved yet: only 3 of the 16 registers have gone nonzero
+within a 60-second run, and only to small (dim) values - consistent with
+F_870c's one-nibble-step-per-call fade rate combined with F_86ac's gate
+only firing intermittently (observed both 0 and &ff across a run, not
+constantly &ff), so full convergence to the real target colours might
+just need more real time than tested so far.
+
+UPDATE - ran a 180-second/46-billion-instruction soak (with the "Start
+Game" click) to check: it genuinely *stalls*, not just slow - vidc.log
+still shows exactly the same 3 registers at exactly the same values
+(&1, &11, &1) at the end as it did at 60 seconds. Explanation found: a
+*different*, previously-unseen busy-wait now dominates almost the entire
+run (pchist: &176ac, ~15 billion of the ~46 billion total instructions) -
+a two-stage "wait for [&2acec]&7==0, then wait for it to become nonzero
+again" handshake, reached only after the click (not present in any
+pre-click run this whole investigation has done). &2acec is a new
+address, not &84e8/&84ec - this is the same *category* of unemulated
+hardware-completion wait as those two, not a regression of the fix above
+(confirmed: no drop in vidc.log diversity between the 60s and 180s runs,
+it was already stalled by 60s). Once the game gets stuck here, it stops
+issuing whatever "kicks" &84e8/&84ec, which is why the palette stops
+progressing - a downstream symptom of this new wait, not a new bug in
+the palette mechanism itself. This is the clear next thing to chase:
+same investigative pattern as &84e8/&84ec and &2a5b0 (find who reads/
+writes &2acec, understand what real hardware condition it's gating on,
+apply the same kind of bounded-clear fix), just not done in this
+session - left open.

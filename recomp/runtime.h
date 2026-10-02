@@ -90,14 +90,6 @@ void watch_write(uint32_t addr, uint32_t val);   /* TEMP: see runtime.c */
 static inline void WR32(uint32_t a, uint32_t v)
 {
     if ((a & 0x3FFFFFC) == 0x3400000) { vidc_write(v); return; }
-    /* EXPERIMENTAL (see README): &84e8/&84ec are set to &ff by two separate
-     * "kick" sites and polled (OR'd together, wait while nonzero) by a
-     * generic busy-wait used all over the code - but nothing in the static
-     * image ever clears them. Most likely real hardware (sound DMA buffer-
-     * end?) clears them as a side effect we don't emulate. Simulate
-     * instant completion by just not storing the "busy" write at all.
-     */
-    if ((a & 0x3FFFFFC) == 0x84e8 || (a & 0x3FFFFFC) == 0x84ec) return;
     a &= 0x3FFFFFC;
     watch_write(a, v);
     CODECHK(a);
