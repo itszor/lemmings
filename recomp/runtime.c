@@ -669,6 +669,7 @@ static uint32_t vduvar(uint32_t v)
 }
 
 static uint32_t swi_pc;
+static int swi_x;         /* set by swi(): was this call X-flagged (error-checking)? */
 static void os_byte(void)
 {
     uint32_t op = R[0] & 0xFF;
@@ -728,7 +729,18 @@ static void os_file(void)
     ev("OS_File", "is", op, name, n);
     int ok = hostpath(name, path);
     if (op == 255 || op == 12 || op == 14 || op == 16) {
-        if (!ok) { fprintf(stderr, "file not found %s\n", name); finish("file not found"); }
+        if (!ok) {
+            /* X-flagged (error-checking) callers are explicitly written to
+             * handle this (e.g. LemBoot's &8b4c loader: `bvs retry`) - a
+             * real RISC OS error return (V set) lets that logic do
+             * whatever it would for a genuinely missing/not-yet-named
+             * file, instead of us crashing the whole emulation over what
+             * the game itself treats as a recoverable condition. */
+            if (swi_x) { VF = 1; return; }
+            fprintf(stderr, "file not found %s (pc=%08x r1=%08x icount=%llu)\n",
+                    name, g_cur_pc, R[1], (unsigned long long)icount);
+            finish("file not found");
+        }
         if (R[3] & 0xFF) finish("load at file address unsupported");
         long len = load_file(path, R[2]);
         R[4] = (uint32_t)len; R[0] = 1;
@@ -804,6 +816,7 @@ void swi(uint32_t n, uint32_t nextpc)
     uint32_t x = n & 0x20000, b = n & ~0x20000u;
     VF = 0;
     swi_pc = nextpc;
+    swi_x = (n & 0x20000) != 0;
     if (b >= 0x100 && b <= 0x1FF) { vdu_put(b - 0x100); return; }
     switch (b) {
     case 0: vdu_put(R[0]); return;
@@ -852,6 +865,15 @@ void swi(uint32_t n, uint32_t nextpc)
         }
         return;
     case 0x1D: return;                      /* OS_RemoveCursors: no cursor to hide */
+    /* OS_EnterOS: switches to SVC mode on real hardware. We don't model
+     * privilege modes/banked registers at all, so there's nothing to do -
+     * but it must not fall through to the generic unhandled-SWI path,
+     * which sets VF=1 (error indicator) for any X-flagged unknown SWI.
+     * LemBoot calls this (X-flagged) right before writing IOC registers
+     * at &87e4, then does `TEQP pc,#0` to return to user mode - which,
+     * with VF left set by the old unhandled-SWI fallback, would read back
+     * as "the mode switch failed" to anything checking VF/VS afterward. */
+    case 0x16: return;
     case 0x2C: CF = interactive ? escape_pressed : 0; return;
     case 0x31: {
         uint32_t i = R[0], o = R[1];

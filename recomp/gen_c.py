@@ -376,7 +376,13 @@ class Recomp:
         name = DPOPS[op]
         if 8 <= op <= 11:
             if rd == 15:                                     # TEQP & co: PSR from result
-                e = {8: '%s & %s', 9: '%s ^ %s', 10: '%s - %s', 11: '%s + %s'}[op] % (av, b)
+                # Rn=PC needs the *full* packed PC+PSR value here (the
+                # whole point of the idiom is restoring mode/flags via
+                # PC's own packed representation) - av above was computed
+                # with full=False (bare address), correct for ordinary
+                # uses of Rn=PC but wrong for this one.
+                av15 = self.regv(rn, a, 12 if regshift else 8, True) if rn == 15 else av
+                e = {8: '%s & %s', 9: '%s ^ %s', 10: '%s - %s', 11: '%s + %s'}[op] % (av15, b)
                 return ['SETPSR(%s);' % e]
             if op in (8, 9):
                 return ['DP_%s(%s, %s, %s);' % (name, av, b, c)]

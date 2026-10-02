@@ -1034,3 +1034,75 @@ back to the zeroed default once the fade has nothing real to move
 toward. Finding what's supposed to write LemBoot's target table (same
 open question as LemProg's &8468, just LemBoot's own address) is the
 clear next step.
+
+UPDATE - found and fixed a genuine translator bug this way, prompted by
+the user noticing that `SWI OS_EnterOS` at &87e4 really does switch
+processor mode on real hardware (we'd been treating it as an inert
+unhandled SWI) and asking what observable effect that has. The
+instruction right after it, at &87fc, decodes (checked against the raw
+word, not just capstone's rendering) to `TEQS pc, #0` with Rd=15 - the
+classic pre-ASPR 26-bit-ARM "TEQP" idiom, used to restore mode+flags by
+writing PC's own packed representation back into PC. gen_c.py's
+dataproc() already special-cases Rd=15 for this family (TEQP/CMPP/CMNP/
+TSTP, "PSR from result") but computed the Rn=PC operand with full=False
+(bare address) regardless - correct for ordinary uses of PC-as-operand,
+wrong for this one, where the *whole point* is reading PC's packed PSR
+bits. Fixed in gen_c.py: when Rn=15 in this specific case, recompute
+with full=True. This is a genuine translator correctness bug, not
+LemBoot-specific - it would misfire for `TEQP/CMPP/CMNP/TSTP pc, ...`
+anywhere in either program; just happened to be found here.
+
+Separately, implemented `SWI OS_EnterOS` (&16) as a proper no-op success
+(we don't model privilege modes/banked registers at all, so "entering
+SVC mode" has nothing to actually do) instead of letting it fall through
+to the generic unhandled-SWI path, which sets VF=1 for any X-flagged
+unknown SWI - with VF left set, the TEQP return would read back as "the
+mode switch failed" to anything checking it afterward, before the fix
+above even gets a chance to restore real flag state.
+
+Checked the user's original hypothesis too (musmod2 being IOC/timer-
+driven rather than VSYNC-driven, installing something the main program
+observes): found no OS_Claim for the Tick vector (&1C) anywhere in a
+--boot run, and musmod2's own SWI chunk is never called either (0 "Mus_"
+events logged, consistent with the earlier LemProg finding). Doesn't
+rule out an IOC-timer mechanism entirely, but nothing currently in our
+traces points at the music module specifically being the cause - closed
+as a lead for now, record kept in case it resurfaces.
+
+These two fixes together change behaviour substantially and expose a new
+issue, not a regression: &880c's palette build/display mechanism (the
+subject of the "LemBoot's own &880c" section above) now runs much
+further, and a previously-"unreached via normal flow" loader routine at
+&8b6c-&8b94 starts getting exercised - sometimes. That routine's job:
+copy a filename (from wherever R1 points on entry) onto the end of a
+shared `<Lem$Dir>.Lemmings.` path template (confirmed by reading it
+directly - prefix lives at &8b94, filename destination at &8ba7, exactly
+19 bytes in, matching the prefix's length), returning R1 pointing at the
+complete path for an X-flagged (error-checking) OS_File call right after
+(&8b4c, with an explicit `bvs retry` loop - the game's own code already
+expects this call can fail). Hit intermittently (real-timing-dependent,
+same category as earlier interactive-mode nondeterminism in this file):
+sometimes the OS_File fires before the filename's been copied in,
+leaving the unmodified "...Lemmings." template with no file to find.
+
+Our os_file() used to treat *any* unresolved path as fatal regardless of
+the X-flag, which crashed the whole emulation on this - overly
+aggressive, since the game's own code is explicitly written to treat
+this as recoverable. Fixed: on X-flagged OS_File calls specifically, a
+missing file now returns a real RISC-OS-style error (V flag set) instead
+of calling finish(), letting the game's own retry/error logic handle it
+exactly as the real game would. Confirmed stable across 8+ consecutive
+--boot runs post-fix (previously ~1 in 3 would crash).
+
+Net result of this update: two real bugs fixed (one a genuine, general
+translator correctness issue), stability improved, and the actual
+remaining blocker characterised precisely (a timing race in when a
+filename gets copied into a shared path buffer, upstream of LemBoot's
+own loader call) - but the logo still doesn't render to a stable visible
+frame yet. Next step: find what's *supposed* to call the &8b6c filename-
+copy routine before &8b4c's OS_File fires, and why it's sometimes late
+relative to our vsync-driven &880c calls - likely another instance of
+"our synthetic handler calls are injected outside the game's real
+timing" (same root cause already named for the generic in_handler
+catch-all fix above), needing either tighter sequencing or a better
+understanding of what real-hardware ordering guarantee we're missing.
