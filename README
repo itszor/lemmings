@@ -473,3 +473,28 @@ already proved. Not yet confirmed this fixes the reported scrambling
 specifically, since we can't reproduce it yet - most likely relevant to
 whatever real gameplay/scrolling rendering looks like, which our own
 testing hasn't reached (we've only gotten as far as the panel above).
+
+UPDATE - reproduced it (screenshot: scrambled.png) and found the real
+cause: it's immediate (present before any click) and never changes, which
+rules out a dynamically-drawn broken image - it's a *static* leftover
+state. Repurposed watch_write() (runtime.c/.h) to watch SCREEN itself
+instead of spec_852c's tables, and caught the literal byte pattern
+`dddddddd` being written straight into screen memory by a copy routine at
+&e1e0-&e228 (and &16fe8-&16ffc) - 0xDD is a classic "uninitialised memory"
+fill convention. This isn't a stride bug corrupting real pixels; it's a
+real blit of a source buffer that was never populated with actual decoded
+graphics.
+
+Traced the copy's source pointer (fp+&124, read at &19360) back through
+two more indirections (&192d4-&192dc, &16fc0-&16fc8) to a fixed workspace
+slot at &8008 - which gets *read* (via the same register-thunk idiom used
+everywhere else in this codebase) in multiple places but is never
+*written* anywhere we've found. Most likely explanation: &8008 is meant
+to hold a free-memory/workspace pointer RISC OS itself would normally
+provide (via OS_GetEnv's memory-limit return, or a WimpSlot-derived
+value) that our runtime's stub for that doesn't faithfully replicate -
+not a simple constant-typo bug like the last two fixes, but a real gap in
+how we model the program's memory layout. Needs figuring out what &8008
+is really supposed to contain (and by what mechanism) before this can be
+fixed properly - left open rather than guessed at, given the last
+"obvious-looking" guess (spec_852c) turned out to be completely wrong.

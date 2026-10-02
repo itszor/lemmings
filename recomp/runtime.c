@@ -122,16 +122,21 @@ void dbg_hook(uint32_t a)
     while (pchist[h].n && pchist[h].a != a) h = (h + 1) % PCHIST;
     pchist[h].a = a; pchist[h].n++;
 }
-/* TEMP: log the first few writes into [lo,hi) from anywhere, with the pc
- * that did it - see README, "what writes into &8428/&83e8". */
+/* TEMP: log the first few distinct-pc writes into [lo,hi) from anywhere,
+ * with the pc that did it - see README. Currently watching SCREEN itself,
+ * to find out what's drawing the "scrambled" static image reported there
+ * (was &83e0-&8468, the spec_852c tables - that investigation is done). */
 void watch_write(uint32_t addr, uint32_t val)
 {
-    static int n;
-    uint32_t lo = 0x83e0, hi = 0x8468;
-    if (addr >= lo && addr < hi && n < 40) {
-        n++;
-        fprintf(stderr, "watch: pc=%08x wrote %08x -> [%08x] (icount %llu)\n",
-                g_cur_pc, val, addr, (unsigned long long)icount);
+    static uint32_t seen_pc[64]; static int n;
+    uint32_t lo = SCREEN, hi = SCREEN + 3 * 32000;
+    if (addr >= lo && addr < hi) {
+        for (int k = 0; k < n; k++) if (seen_pc[k] == g_cur_pc) return;
+        if (n < 64) {
+            seen_pc[n++] = g_cur_pc;
+            fprintf(stderr, "watch: pc=%08x wrote %08x -> [%08x] (icount %llu)\n",
+                    g_cur_pc, val, addr, (unsigned long long)icount);
+        }
     }
 }
 static void dump_pchist(void)
