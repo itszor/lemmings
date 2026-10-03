@@ -24,7 +24,7 @@ extern uint32_t npc;
 extern uint32_t pc_bias;                /* where the running image really is, minus where it was translated (LemBoot: see call_addr) */
 extern uint64_t icount, irq_next;
 extern const uint8_t *codemap;          /* 1 bit per word of the image: compiled code */
-extern uint32_t img_end;
+extern uint32_t img_base, img_end;      /* the running image's address range */
 
 void irq_point(void);                    /* interrupts / instruction limit */
 void swi(uint32_t n, uint32_t nextpc);   /* OS stubs */
@@ -44,10 +44,18 @@ void trace_insn(uint32_t a);
 #endif
 
 /* ---- flags ------------------------------------------------------------------ */
-#define PSR()      ((NF << 31) | (ZF << 30) | (CF << 29) | (VF << 28))
+/* MODEBITS: R15's other PSR bits - I/F (bits 27/26) and the processor mode
+ * (bits 1-0: 0 USR, 1 FIQ, 2 IRQ, 3 SVC). The games run in USR mode, where
+ * this stays 0; modules run in SVC mode and the sound fill in IRQ mode, with
+ * banked R13/R14 (and R8-R12 in FIQ) - see set_psr_mode() in runtime.c. */
+extern uint32_t MODEBITS;
+void set_psr_mode(uint32_t m);           /* m: new I/F + mode bits; banks registers */
+#define PSR()      ((NF << 31) | (ZF << 30) | (CF << 29) | (VF << 28) | MODEBITS)
 #define SETNZ(r)   do { NF = (r) >> 31; ZF = (r) == 0; } while (0)
 #define SETPSR(v)  do { uint32_t _p = (v); NF = _p >> 31; ZF = (_p >> 30) & 1; \
-                        CF = (_p >> 29) & 1; VF = (_p >> 28) & 1; } while (0)
+                        CF = (_p >> 29) & 1; VF = (_p >> 28) & 1; \
+                        /* USR mode can only change the flags */ \
+                        if (MODEBITS & 3) set_psr_mode(_p & 0x0C000003); } while (0)
 
 static inline uint32_t add_c(uint32_t a, uint32_t b, uint32_t cin)
 {
@@ -84,8 +92,8 @@ static inline uint32_t RD32(uint32_t a)
     return s ? (w >> s) | (w << (32 - s)) : w;
 }
 static inline uint32_t RD8(uint32_t a) { return MEM[a & 0x3FFFFFF]; }
-#define CODECHK(a) do { if ((a) < img_end && (a) >= 0x8000 && \
-        (codemap[((a) - 0x8000) >> 5] >> ((((a) - 0x8000) >> 2) & 7) & 1)) smc_write(a); } while (0)
+#define CODECHK(a) do { if ((a) < img_end && (a) >= img_base && \
+        (codemap[((a) - img_base) >> 5] >> ((((a) - img_base) >> 2) & 7) & 1)) smc_write(a); } while (0)
 void vidc_write(uint32_t v);           /* runtime.c: physical VIDC register writes, &3400000 */
 void watch_write(uint32_t addr, uint32_t val);   /* TEMP: see runtime.c */
 static inline void WR32(uint32_t a, uint32_t v)

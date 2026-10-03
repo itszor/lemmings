@@ -10,7 +10,10 @@ points and self-modification sites all come from the earlier analysis
 
 Usage: gen_c.py [--img=path] [--json=path] [--tsvdir=path] [--dyn=path,...]
                 [--loops] [--files=N] [--prefix=F] [--tabprefix=recomp]
-                [--pcbias] [--out=dir]
+                [--pcbias] [--out=dir] [--base=hex]
+    --base: load address the image is translated for (default 8000). A RISC
+    OS relocatable module is position-independent, so it's translated at the
+    address the runtime loads it to (see recomp/runtime.c, MODBASE).
     --pcbias: emit PC-derived values relative to the runtime's pc_bias
     (for an image that relocates itself and runs from the copy - LemBoot).
     Defaults target LemProg (extracted_decompressed/LemProg.bin,
@@ -26,7 +29,7 @@ import gen_asm
 from export_ghidra import duff_entries
 
 M32 = 0xFFFFFFFF
-BASE = 0x8000
+BASE = 0x8000                   # image load address; --base= overrides (e.g. a module's RMA address)
 CONDS = ['EQ', 'NE', 'CS', 'CC', 'MI', 'PL', 'VS', 'VC', 'HI', 'LS', 'GE', 'LT', 'GT', 'LE', 'AL', 'NV']
 DPOPS = ['AND', 'EOR', 'SUB', 'RSB', 'ADD', 'ADC', 'SBC', 'RSC',
          'TST', 'TEQ', 'CMP', 'CMN', 'ORR', 'MOV', 'BIC', 'MVN']
@@ -390,13 +393,13 @@ class Recomp:
         name = DPOPS[op]
         if 8 <= op <= 11:
             if rd == 15:                                     # TEQP & co: PSR from result
-                # Rn=PC needs the *full* packed PC+PSR value here (the
-                # whole point of the idiom is restoring mode/flags via
-                # PC's own packed representation) - av above was computed
-                # with full=False (bare address), correct for ordinary
-                # uses of Rn=PC but wrong for this one.
-                av15 = self.regv(rn, a, 12 if regshift else 8, True) if rn == 15 else av
-                e = {8: '%s & %s', 9: '%s ^ %s', 10: '%s - %s', 11: '%s + %s'}[op] % (av15, b)
+                # ARM2: R15 as Rn reads as the bare address (PSR bits
+                # zero) - only as Rm does it include the PSR. That's what
+                # makes `TEQP PC,#0` mean "back to USR mode, flags clear"
+                # (LemBoot &87fc, after OS_EnterOS). An earlier version
+                # read the full PC+PSR here; harmless while processor
+                # modes weren't modelled, wrong now that they are.
+                e = {8: '%s & %s', 9: '%s ^ %s', 10: '%s - %s', 11: '%s + %s'}[op] % (av, b)
                 return ['SETPSR(%s);' % e]
             if op in (8, 9):
                 return ['DP_%s(%s, %s, %s);' % (name, av, b, c)]
@@ -558,6 +561,7 @@ class Recomp:
         for i in range(0, len(bits), 16):
             tab.append('    ' + ', '.join('%d' % b for b in bits[i:i + 16]) + ',')
         tab.append('};')
+        tab.append('const uint32_t %s_img_base = %s;' % (self.tabprefix, h(BASE)))
         tab.append('const uint32_t %s_img_end = %s;' % (self.tabprefix, h(self.end)))
         open(os.path.join(outdir, 'entries.c'), 'w').write('\n'.join(tab) + '\n')
         print('functions %d, instructions %d, entry points %d, SMC sites %d, Duff jumps %d (%d as loops), files %d' % (
@@ -567,6 +571,8 @@ class Recomp:
 
 def main():
     opts = dict(x[2:].split('=', 1) if '=' in x else (x[2:], '1') for x in sys.argv[1:])
+    global BASE
+    BASE = int(opts.get('base', '8000'), 16)
     img_path = opts.get('img', os.path.join(HERE, '..', 'extracted_decompressed', 'LemProg.bin'))
     json_path = opts.get('json', os.path.join(GH, 'lemprog.json'))
     tsvdir = opts.get('tsvdir', os.path.join(GH, 'out', 'lemprog'))

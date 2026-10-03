@@ -1253,3 +1253,69 @@ address), in the runtime interpreter's LDM/STM, and in tools/arm2.py (the
 same bug, inherited from galactic dan). Re-running tools/unpack_lemboot.py
 gives byte-identical extracted_decompressed/ files, and the door now
 opens smoothly frame by frame.
+
+NEW: music and sound effects - MusicModule2 translated and running
+-------------------------------------------------------------------
+!Run RMLoads musmod2 ("MusicModule 1.02 (7 Apr 1990)"): a 4-channel tracker
+player that also plays the game's sound effects. LemProg drives it purely
+through its SWI chunk (&41C40: On, Off, Songpos, Getpos, Volume,
+Samplerate, Patch, Effect, Effectstatus, Load, Effectcontrol, Run, Sector,
+Bufferaddress, Memvalid, Laidback, Samplestarts). It uses no hardware
+directly, only the OS Sound system. It replaces the Level 1 sound channel
+handler (Sound_Configure R3 = its handler block at module+&2ea8: fill code
+&2ed0, overrun fixup &2f60), and its fill calls one voice generator per DMA
+channel (&2444/&2608/&27cc/&2990, via `orrs pc,r0,#2`) and runs the song
+sequencer (&a78) from inside the fill. So the module is translated as-is
+and the emulation is at the SoundDMA level:
+
+  - Translation: ghidra/run_ghidra_musmod.sh + `make regen`. A relocatable
+    module is position-independent, so it's analysed and translated at the
+    address the runtime loads it to (MODBASE = &1800000, gen_c.py
+    --base=1800000; export_ghidra.py gained a `nobase` option because a
+    module's offset 0 is its header, not code). Entry points are seeded
+    from the module header, the *command table, the handler block, the
+    voice generators, and &2f1c (where each voice generator returns to -
+    pushed by `add r0,pc,#&c`, popped by `ldm sp!,{pc}`).
+  - runtime.c "RMLoads" it into an emulated RMA, runs its init, routes the
+    &41C40 chunk to its SWI handler, and implements OS_Module 6 (claim;
+    init claims ~150K of workspace), Sound_Configure, Sound_Stereo and
+    Sound_Enable. module_call() swaps in the module's dispatch tables and
+    image range for one call, so it can be entered from LemProg, LemBoot
+    or interrupt context.
+  - Processor modes are now modelled (MODEBITS: the mode and I/F bits of
+    R15, with banked R13/R14, and R8-R12 in FIQ, in set_psr_mode()). The
+    module runs in SVC mode for init and SWIs and IRQ mode for the fill,
+    and switches modes itself with TEQP (e.g. &2d30: IRQ -> SVC around an
+    OS_Word, whose SWI corrupts R14_svc). A SWI now loads R14_svc, and
+    OS_EnterOS really enters SVC mode. The games themselves stay in USR
+    mode, where MODEBITS is 0 and nothing changes.
+  - That also corrects the earlier TEQP "fix" above: on ARM2, R15 as *Rn*
+    reads as the bare address (PSR bits zero); only as Rm does it include
+    the PSR. That's what makes `TEQP PC,#0` mean "USR mode, flags clear",
+    which LemBoot (&87fc) and LemProg (&8520) use after OS_EnterOS.
+    gen_c.py and the interpreter now do this; reading the full PC+PSR was
+    harmless only while modes weren't modelled.
+  - Sound DMA (sound_dma_advance()/sound_dma_fill()): every emulated
+    centisecond tick advances a DMA clock, and each elapsed buffer period
+    (samples x period) calls the Level 1 fill exactly as SoundDMA does
+    (checked against the RISC OS SoundDMA source, s/Sound0: IRQ mode,
+    R12 = buffer start, R10 = end, R11 = channel count/interleave, R9 =
+    handler block). The interleaved 8-bit VIDC log samples are then
+    converted to 16-bit stereo using the Sound_Stereo positions, at
+    sum/nchan since VIDC time-multiplexes the channels. Interactive runs
+    push each buffer into an SDL audio stream (no callback, SDL resamples
+    from the DMA rate; a 40ms cushion is re-established if it ever runs
+    dry). --wav records the same buffers.
+  - Two OS details the module depends on: OS_File 5 must report the file's
+    real load/exec addresses (Load checks for filetype &CC5, "TeqMusic"
+    - now taken from the extracted files' ",load-exec" suffixes), and
+    Sound_Configure R0=1 really does mean one channel (per the SoundDMA
+    source). The Samplerate step sets 1 channel at 48us, and the sequencer
+    then sets 4 channels itself on its first ticks.
+
+Result: music plays from the level briefing screen on (20.8kHz per
+channel, 4 channels, stereo positions 2 = left, 3 = right, 1/4 = centre),
+along with the module-driven sound effects. Checked by recording --wav
+and looking at the waveforms. The "store to compiled code" notes at
+module+&1da0 onwards are its Samplestarts table, all zero words that the
+analysis classed as code - harmless.

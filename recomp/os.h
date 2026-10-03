@@ -37,6 +37,7 @@ extern int screenshot_requested;                      /* -1 if empty */
 int  sound_init_device(void);
 int  sound_init_wav(const char *path);
 void sound_render(int frames);                  /* headless: frames at 48kHz */
+void sound_out(const int16_t *lr, int frames, int rate);   /* one sound DMA buffer, stereo */
 void sound_swi(uint32_t b);
 void sound_close(void);
 #endif

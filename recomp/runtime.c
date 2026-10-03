@@ -45,7 +45,26 @@ uint32_t npc;
 uint32_t pc_bias;
 uint64_t icount, irq_next;
 const uint8_t *codemap;
-uint32_t img_end;
+uint32_t img_base = 0x8000, img_end;
+
+/* Processor modes (26-bit ARM): R13/R14 are banked per mode, R8-R12 too in
+ * FIQ. The games only ever run in USR mode; the module runs in SVC mode
+ * (SWIs, init) and its sound fill in IRQ mode - and switches between them
+ * itself with TEQP, relying on the banking (e.g. musmod2 &2d30: IRQ -> SVC
+ * around an OS_Word, whose SWI corrupts R14_svc but not R14_irq). */
+uint32_t MODEBITS;
+static uint32_t bank_r13[4], bank_r14[4], bank_fiq[5], bank_r8[5];
+void set_psr_mode(uint32_t m)
+{
+    uint32_t from = MODEBITS & 3, to = m & 3;
+    if (from != to) {
+        bank_r13[from] = R[13]; bank_r14[from] = R[14];
+        if (from == 1) { memcpy(bank_fiq, R + 8, sizeof bank_fiq); memcpy(R + 8, bank_r8, sizeof bank_r8); }
+        if (to == 1) { memcpy(bank_r8, R + 8, sizeof bank_r8); memcpy(R + 8, bank_fiq, sizeof bank_fiq); }
+        R[13] = bank_r13[to]; R[14] = bank_r14[to];
+    }
+    MODEBITS = m & 0x0C000003;
+}
 
 /* generated: LemProg (the main engine) */
 extern const struct entry { uint32_t a; fn_t f; } recomp_entries[];
@@ -58,6 +77,12 @@ extern const struct entry recompB_entries[];
 extern const unsigned recompB_nentries;
 extern const uint8_t recompB_codemap[];
 extern const uint32_t recompB_img_end;
+
+/* generated: musmod2 (MusicModule 1.02, RMLoaded by !Run) - see module_call() */
+extern const struct entry recompM_entries[];
+extern const unsigned recompM_nentries;
+extern const uint8_t recompM_codemap[];
+extern const uint32_t recompM_img_base, recompM_img_end;
 
 static fn_t *entry_tab;                 /* direct-mapped: (a - LOAD) >> 2 */
 /* LemBoot and LemProg are separate programs that both load at &8000 (RISC
@@ -166,6 +191,190 @@ static void dump_pchist(void)
     }
 }
 
+/* ---------------------------------------------------------------- MusicModule2
+ * !Run RMLoads musmod2 (MusicModule 1.02, 1990: a 4-channel tracker player
+ * that also plays the sound effects). We "RMLoad" it ourselves: copy it into
+ * an emulated RMA at MODBASE, run its init, route its SWI chunk (&41C40) to
+ * its SWI handler, and emulate the OS Sound system's DMA side for it.
+ *
+ * A relocatable module is position-independent, so it's translated at the
+ * address we load it to (gen_c.py --base, see ghidra/run_ghidra_musmod.sh)
+ * and dispatched like any other image: module_call() swaps in its tables
+ * and address range for the duration of one call and restores them
+ * afterwards, so it can be entered from LemProg, LemBoot, or interrupt
+ * context alike. Module code runs in the processor mode the OS would use -
+ * SVC for init and SWIs, IRQ for the sound fill - with banked R13/R14 (see
+ * set_psr_mode()), and returns to the caller's mode via R14's PSR bits. */
+#define MODBASE      0x01800000u          /* our RMA: module image... */
+#define RMA_HEAP     (MODBASE + 0x10000u) /* ...then OS_Module 6 claims */
+#define DMA_BUF      0x017F0000u          /* two sound DMA buffers, &2000 each */
+#define SVC_STACK    0x017F8000u          /* R13_svc / R13_irq stack tops */
+#define IRQ_STACK    0x017FC000u
+#define MOD_PRIVATE  0x017FFFFCu          /* the module's private word */
+#define MODE_SVC     3u
+#define MODE_IRQ     (2u | 0x08000000u)   /* IRQ mode, IRQs disabled */
+static int in_module;
+static uint32_t mod_size, rma_next = RMA_HEAP;
+static void finish(const char *why) __attribute__((noreturn));
+static long load_file(const char *path, uint32_t addr);
+static fn_t *entry_tab_mod;
+static const uint8_t *codemap_mod;
+static uint32_t img_end_mod;
+static fn_t *build_tab(const struct entry *ents, unsigned n, uint32_t base, uint32_t end);
+
+/* Run module code at addr in processor mode `mode` with R14 = r14, until it
+ * returns to HANDLER_RET. */
+static void module_call(uint32_t addr, uint32_t mode, uint32_t r14)
+{
+    fn_t *st = entry_tab; const uint8_t *sc = codemap;
+    uint32_t sbase = img_base, se = img_end, snpc = npc, smode = MODEBITS;
+    int sh = in_handler, sm = in_module;
+    entry_tab = entry_tab_mod; codemap = codemap_mod; img_base = MODBASE; img_end = img_end_mod;
+    in_handler = in_module = 1;               /* no nested interrupts while in module code */
+    set_psr_mode(mode);
+    R[14] = r14;
+    npc = addr;
+    uint64_t i0 = icount;
+    while (npc != HANDLER_RET) {
+        if (npc == RETURN_TO_OS) finish("returned to OS");
+        if (icount - i0 > 50000000) {
+            fprintf(stderr, "module_call(%08x): bailing out after 50M instructions, pc=%08x\n", addr, npc);
+            break;
+        }
+        call_addr(npc);
+    }
+    set_psr_mode(smode);                      /* usually already done by movs pc,lr */
+    entry_tab = st; codemap = sc; img_base = sbase; img_end = se; npc = snpc;
+    in_handler = sh; in_module = sm;
+}
+
+static void module_load(const char *path)
+{
+    long n = load_file(path, MODBASE);
+    if (n <= 0) { fprintf(stderr, "musmod2: cannot load %s - no music\n", path); return; }
+    mod_size = (uint32_t)n;
+    img_end_mod = recompM_img_end;
+    if (recompM_img_base != MODBASE || MODBASE + mod_size != img_end_mod)
+        fprintf(stderr, "warning: musmod2 differs from its compiled image (base %08x)\n", recompM_img_base);
+    entry_tab_mod = build_tab(recompM_entries, recompM_nentries, MODBASE, img_end_mod);
+    codemap_mod = recompM_codemap;
+    WR32(MOD_PRIVATE, 0);
+    uint32_t saved[16], sf[4] = {NF, ZF, CF, VF};
+    memcpy(saved, R, sizeof R);
+    R[10] = 0; R[11] = 0; R[12] = MOD_PRIVATE;   /* init: env string, instantiation, private word */
+    VF = 0;
+    module_call(MODBASE + RD32(MODBASE + 4), MODE_SVC, HANDLER_RET | MODEBITS);
+    if (VF) fprintf(stderr, "musmod2: init returned an error\n");
+    memcpy(R, saved, sizeof R);
+    NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
+}
+
+/* SWI in the module's chunk: entered in SVC mode with R11 = offset in chunk,
+ * R12 = private word, R14_svc = return address + the caller's PSR, which the
+ * handler's movs/orrs pc,lr restores (with V set on error). R0-R9 are in/out;
+ * the kernel preserves R10-R12 for the caller. */
+static void module_swi(uint32_t b, int x)
+{
+    if (!mod_size) return;
+    uint32_t r10 = R[10], r11 = R[11], r12 = R[12];
+    R[11] = b & 0x3F; R[12] = MOD_PRIVATE;
+    module_call(MODBASE + RD32(MODBASE + 0x20), MODE_SVC, HANDLER_RET | (PSR() & ~0x10000000u));
+    R[10] = r10; R[11] = r11; R[12] = r12;
+    if (VF && !x) fprintf(stderr, "musmod2: SWI &%x returned an error: %s\n", b, (char *)MEM + ((R[0] + 4) & 0x3FFFFFF));
+}
+
+/* ---------------------------------------------------------------- Sound DMA
+ * The OS Sound system's lowest level, as a Level 1 handler sees it: every
+ * buffer period (samples x period us) the DMA interrupt calls the installed
+ * handler's fill code (word 0 of the handler block given to Sound_Configure)
+ * with R12 = buffer start, R10 = buffer end, R11 = number of channels
+ * (samples interleaved, stride R11), R9 = the handler block. The bytes are
+ * VIDC 8-bit logarithmic samples, one per channel per frame, panned by
+ * Sound_Stereo. We run that fill in step with emulated time
+ * (sound_dma_advance(), called every centisecond tick) and convert each
+ * buffer to 16-bit stereo for sound.c (SDL stream or --wav). */
+#define DEFAULT_LEVEL1 0x03800100u        /* stands in for the OS's own handler: silence */
+static uint32_t snd_nchan = 1, snd_samples = 208, snd_period = 48, snd_level1 = DEFAULT_LEVEL1, snd_level2,
+                snd_enabled = 2;
+static int snd_pan[8];
+static uint64_t snd_acc_us;
+static int snd_buf;
+static int16_t snd_linear[128];
+
+static void sound_dma_fill(void)
+{
+    uint32_t len = snd_nchan * snd_samples, buf = DMA_BUF + (snd_buf ^= 1) * 0x2000;
+    if (len > 0x2000) len = 0x2000;
+    if (snd_level1 != DEFAULT_LEVEL1 && mod_size && snd_enabled == 2) {
+        uint32_t saved[16], sf[4] = {NF, ZF, CF, VF};
+        memcpy(saved, R, sizeof R);
+        R[9] = snd_level1; R[10] = buf + len; R[11] = snd_nchan; R[12] = buf;
+        module_call(RD32(snd_level1), MODE_IRQ, HANDLER_RET | MODE_IRQ);
+        memcpy(R, saved, sizeof R);
+        NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
+    } else memset(MEM + buf, 0, len);
+    if (!snd_linear[127])
+        for (int m = 0; m < 128; m++)                       /* VIDC log: 3-bit chord, 4-bit step */
+            snd_linear[m] = (int16_t)((((2 * (m & 15) + 33) << (m >> 4)) - 33) * 4);
+    static int16_t out[2 * 2048];
+    uint32_t frames = len / snd_nchan;
+    if (frames > 2048) frames = 2048;
+    for (uint32_t f = 0; f < frames; f++) {
+        int l = 0, r = 0;
+        for (uint32_t c = 0; c < snd_nchan; c++) {
+            uint8_t b = MEM[buf + f * snd_nchan + c];
+            int v = snd_linear[b >> 1];
+            if (b & 1) v = -v;
+            int pan = snd_pan[c];
+            l += v * (pan <= 0 ? 127 : 127 - pan) / 127;
+            r += v * (pan >= 0 ? 127 : 127 + pan) / 127;
+        }
+        l /= (int)snd_nchan; r /= (int)snd_nchan;   /* VIDC time-multiplexes channels: each gets 1/nchan */
+        out[2 * f] = (int16_t)(l > 32767 ? 32767 : l < -32768 ? -32768 : l);
+        out[2 * f + 1] = (int16_t)(r > 32767 ? 32767 : r < -32768 ? -32768 : r);
+    }
+    sound_out(out, (int)frames, (int)(1000000 / snd_period));
+}
+
+/* Advance the sound DMA clock by `us` of emulated time. */
+static void sound_dma_advance(uint32_t us)
+{
+    uint64_t buf_us = (uint64_t)snd_samples * snd_period;
+    if (!buf_us) return;
+    snd_acc_us += us;
+    while (snd_acc_us >= buf_us) { snd_acc_us -= buf_us; sound_dma_fill(); }
+}
+
+static int sound_swi_impl(uint32_t b)
+{
+    switch (b) {
+    case 0x40140: {                          /* Sound_Configure */
+        uint32_t old[5] = {snd_nchan, snd_samples, snd_period, snd_level1, snd_level2};
+        if (R[0]) { uint32_t n = 1; while (n < R[0] && n < 8) n <<= 1; snd_nchan = n; }
+        if (R[1]) snd_samples = R[1];
+        if (R[2]) snd_period = R[2];
+        if (R[3]) snd_level1 = R[3];
+        if (R[4]) snd_level2 = R[4];
+        for (int k = 0; k < 5; k++) R[k] = old[k];
+        return 1;
+    }
+    case 0x40141: {                          /* Sound_Enable: 0 read, 1 off, 2 on */
+        uint32_t old = snd_enabled;
+        if (R[0] == 1 || R[0] == 2) snd_enabled = R[0];
+        R[0] = old;
+        return 1;
+    }
+    case 0x40142: {                          /* Sound_Stereo: R0 channel 1-8, R1 position */
+        int c = (int)(R[0] - 1) & 7, old = snd_pan[c];
+        int32_t p = (int32_t)R[1];
+        if (p != -128) snd_pan[c] = p < -127 ? -127 : p > 127 ? 127 : p;
+        R[1] = (uint32_t)old;
+        return 1;
+    }
+    }
+    return 0;
+}
+
 /* spec_852c (the VIDC palette-load routine) has zero static/traced callers
  * (confirmed both in ghidra/out/lemprog/functions.tsv and by instrumenting
  * every instruction: never reached in 100M instructions). Its install code
@@ -182,7 +391,7 @@ static void run_until(uint32_t stop);
 static void finish(const char *why) __attribute__((noreturn));
 static void call_hw_handler(uint32_t addr, uint32_t ioc14, uint32_t ioc24)
 {
-    if (!(0x8000 <= addr && addr < img_end && entry_tab[(addr - LOAD) >> 2])) return;
+    if (!(img_base <= addr && addr < img_end && entry_tab[(addr - img_base) >> 2])) return;
     WR32(0x3200014, ioc14);
     WR32(0x3200024, ioc24);
     uint32_t saved[16], sf[4] = {NF, ZF, CF, VF}, snpc = npc;
@@ -382,7 +591,7 @@ void call_addr(uint32_t a)
      * address gets misrouted into LemBoot's real _start and loops
      * forever instead of ending the call. The generic "in_handler and
      * nothing resolves" catch-all below handles those cases instead. */
-    if (boot_mode && a >= 0x40000 && a < 0x40000 + (img_end_boot - LOAD)) {
+    if (!in_module && boot_mode && a >= 0x40000 && a < 0x40000 + (img_end_boot - LOAD)) {
         /* LemBoot copies its first &2000 bytes from &8000 to &40000 and
          * continues running from there (see the loop at &8010-&802c) -
          * real hardware needs this so it can safely OS_File-load the next
@@ -427,9 +636,17 @@ void call_addr(uint32_t a)
         boot_mode = 0; boot_loaded_lemprog = 0; pc_bias = 0;
         fprintf(stderr, "chain-load: LemBoot -> LemProg at icount %llu\n", (unsigned long long)icount);
     }
-    fn_t f = (!interp_only && a >= LOAD && a < img_end) ? entry_tab[(a - LOAD) >> 2] : 0;
+    fn_t f = (!interp_only && a >= img_base && a < img_end) ? entry_tab[(a - img_base) >> 2] : 0;
     if (f) { f(a); return; }
     if (a == HANDLER_RET) return;
+    if (in_module) {
+        /* Module code should be fully translated - a gap here is a real
+         * one, so report it (once per address), then end this call rather
+         * than taking the whole game down with it. */
+        if (!seen_gap(a)) log_untranslated_branch(a);
+        npc = HANDLER_RET;
+        return;
+    }
     if (in_handler) {
         /* A synthetic call_hw_handler() call landed somewhere we can't
          * resolve. On real hardware these routines run as asynchronous
@@ -547,7 +764,7 @@ static void rt_service(int vsync_now)
     if (now > next_vsync_ns + 20 * CS_NS) next_vsync_ns = now;
     while (now >= next_tick_ns) {
         next_tick_ns += CS_NS;
-        sound_render(480);                       /* --wav in interactive runs */
+        sound_dma_advance(10000);                /* 1 cs of sound DMA - see sound_dma_fill() */
         call_vector(0x1C, 0, 0);
     }
     if (vsync_now || now >= next_vsync_ns) {
@@ -600,7 +817,7 @@ void irq_point(void)
     if (icount >= limit) finish("instruction limit");
     if (icount >= next_tick) {
         next_tick += TICK_STEPS;
-        sound_render(480);                       /* --wav: 1 cs of audio */
+        sound_dma_advance(10000);                /* 1 cs of sound DMA - see sound_dma_fill() */
         call_vector(0x1C, 0, 0);
     }
     if (icount >= next_vsync) {
@@ -801,7 +1018,13 @@ static void os_file(void)
         if (!ok) { R[0] = 0; return; }
         struct stat st;
         stat(path, &st);
-        R[0] = 1; R[2] = 0xFFFFFD00; R[3] = 0; R[4] = (uint32_t)st.st_size; R[5] = 3;
+        /* Load/exec addresses come from the extracted file's ",load-exec"
+         * suffix (the disc's real catalogue values) - MusicModule's Load
+         * checks the load address for filetype &CC5 (TeqMusic). */
+        uint32_t load = 0xFFFFFD00, exec = 0;
+        const char *comma = strrchr(path, ',');
+        if (comma && !strchr(comma, '/')) sscanf(comma + 1, "%x-%x", &load, &exec);
+        R[0] = 1; R[2] = load; R[3] = exec; R[4] = (uint32_t)st.st_size; R[5] = 3;
         return;
     }
     finish("OS_File op unsupported");
@@ -862,6 +1085,9 @@ void swi(uint32_t n, uint32_t nextpc)
     uint32_t x = n & 0x20000, b = n & ~0x20000u;
     VF = 0;
     swi_pc = nextpc;
+    /* A SWI loads R14_svc with the return address - visible to the caller
+     * only if it's itself in SVC mode (why module code stacks R14 first). */
+    if ((MODEBITS & 3) == 3) R[14] = nextpc | PSR(); else bank_r14[3] = nextpc | PSR();
     swi_x = (n & 0x20000) != 0;
     if (b >= 0x100 && b <= 0x1FF) { vdu_put(b - 0x100); return; }
     switch (b) {
@@ -913,15 +1139,10 @@ void swi(uint32_t n, uint32_t nextpc)
         }
         return;
     case 0x1D: return;                      /* OS_RemoveCursors: no cursor to hide */
-    /* OS_EnterOS: switches to SVC mode on real hardware. We don't model
-     * privilege modes/banked registers at all, so there's nothing to do -
-     * but it must not fall through to the generic unhandled-SWI path,
-     * which sets VF=1 (error indicator) for any X-flagged unknown SWI.
-     * LemBoot calls this (X-flagged) right before writing IOC registers
-     * at &87e4, then does `TEQP pc,#0` to return to user mode - which,
-     * with VF left set by the old unhandled-SWI fallback, would read back
-     * as "the mode switch failed" to anything checking VF/VS afterward. */
-    case 0x16: return;
+    /* OS_EnterOS: switch the caller to SVC mode (R13/R14 become the SVC
+     * bank). LemBoot calls this (X-flagged) right before writing IOC
+     * registers at &87e4, then returns to USR with `TEQP pc,#0` at &87fc. */
+    case 0x16: set_psr_mode((MODEBITS & ~3u) | 3); return;
     case 0x2C: CF = interactive ? escape_pressed : 0; return;
     case 0x31: {
         uint32_t i = R[0], o = R[1];
@@ -945,6 +1166,13 @@ void swi(uint32_t n, uint32_t nextpc)
         if (!strncasecmp(s, "QUIT", 4)) finish("OS_CLI QUIT");
         return;
     }
+    case 0x1E:                                   /* OS_Module */
+        if (R[0] == 6) {                         /* claim RMA block */
+            R[2] = rma_next + 4;
+            WR32(rma_next, R[3] + 4);
+            rma_next = (rma_next + R[3] + 4 + 15) & ~15u;
+        } else ev("OS_Module", "ii", R[0], R[1]);
+        return;
     case 0x11: finish("OS_Exit");
     case 0x2B: finish("OS_GenerateError");
     case 0x42: R[0] = interactive ? (uint32_t)((display_ticks_ns() - t0_ns) / CS_NS)
@@ -963,11 +1191,12 @@ void swi(uint32_t n, uint32_t nextpc)
         const char *fmts[] = {"", "i", "ii", "iii", "iiii", "iiiii"};
         ev(name, fmts[nargs], R[0], R[1], R[2], R[3], R[4]);
         if (b == 0x40183) R[1] = voices++;
-        sound_swi(b);
+        if (!sound_swi_impl(b)) sound_swi(b);
         return;
     }
-    if ((b & ~0xFu) == 0x41C40) {          /* MusicModule2's own SWI chunk */
+    if ((b & ~0x3Fu) == 0x41C40) {         /* MusicModule2's own SWI chunk */
         musmod2_swi(b);
+        module_swi(b, x);
         return;
     }
     char name[48]; sprintf(name, "unhandled_SWI_%x", n);
@@ -1069,7 +1298,7 @@ static int exec_word(uint32_t pc, uint32_t i)
         #undef ADDC
         if (logical) c = sc;
         if ((s && rd != 15) || (s && opc >= 8 && opc <= 11)) {
-            if (opc >= 8 && opc <= 11 && rd == 15) SETPSR(res & 0xF0000000);
+            if (opc >= 8 && opc <= 11 && rd == 15) SETPSR(res);
             else { NF = res >> 31; ZF = res == 0; CF = c; VF = v; }
         }
         if (opc >= 8 && opc <= 11) return 0;
@@ -1194,10 +1423,10 @@ static void finish(const char *why)
     exit(0);
 }
 
-static fn_t *build_tab(const struct entry *ents, unsigned n, uint32_t end)
+static fn_t *build_tab(const struct entry *ents, unsigned n, uint32_t base, uint32_t end)
 {
-    fn_t *tab = calloc((end - LOAD) / 4 + 1, sizeof(fn_t));
-    for (unsigned k = 0; k < n; k++) tab[(ents[k].a - LOAD) >> 2] = ents[k].f;
+    fn_t *tab = calloc((end - base) / 4 + 1, sizeof(fn_t));
+    for (unsigned k = 0; k < n; k++) tab[(ents[k].a - base) >> 2] = ents[k].f;
     return tab;
 }
 
@@ -1205,6 +1434,7 @@ int main(int argc, char **argv)
 {
     const char *image = "../extracted_decompressed/LemProg.bin";
     const char *boot_image = "../extracted/!LEMMINGS/LemBoot,fffff843-00000000";
+    const char *musmod_image = "../extracted/!LEMMINGS/musmod2,fffffa43-00000000";
     int scale = 4, headless = 0, no_title = 0, want_boot = 0;
     const char *fs = NULL, *wavpath = NULL;
     int no_sound = 0;
@@ -1256,10 +1486,10 @@ int main(int argc, char **argv)
         recompute_irq();
     }
     img_end_game = recomp_img_end;
-    entry_tab_game = build_tab(recomp_entries, recomp_nentries, img_end_game);
+    entry_tab_game = build_tab(recomp_entries, recomp_nentries, LOAD, img_end_game);
     codemap_game = recomp_codemap;
     img_end_boot = recompB_img_end;
-    entry_tab_boot = build_tab(recompB_entries, recompB_nentries, img_end_boot);
+    entry_tab_boot = build_tab(recompB_entries, recompB_nentries, LOAD, img_end_boot);
     codemap_boot = recompB_codemap;
 
     const char *start_image = want_boot ? boot_image : image;
@@ -1273,6 +1503,8 @@ int main(int argc, char **argv)
     entry_tab = want_boot ? entry_tab_boot : entry_tab_game;
     codemap = want_boot ? codemap_boot : codemap_game;
     img_end = start_img_end;
+    bank_r13[3] = SVC_STACK; bank_r13[2] = IRQ_STACK;   /* privileged-mode stacks */
+    module_load(musmod_image);                   /* !Run: RMLoad MusMod2, before LemBoot */
     R[13] = 0xA8000; R[14] = RETURN_TO_OS; R[12] = 0;
     npc = LOAD;
     recompute_irq();

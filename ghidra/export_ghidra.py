@@ -167,7 +167,10 @@ def strings_in(img, lo, hi):
 
 def main():
     path, base, outp = sys.argv[1], int(sys.argv[2], 16), sys.argv[3]
-    extra = [int(x, 16) for x in sys.argv[4:]]
+    # 'nobase' (anywhere in the extra args): don't seed the image base as a
+    # function - for RISC OS modules, whose offset 0 is the header (data).
+    nobase = 'nobase' in sys.argv[4:]
+    extra = [int(x, 16) for x in sys.argv[4:] if x != 'nobase']
     img = Image(open(path, 'rb').read(), base)
     cache = outp + '.pickle'
     if os.path.exists(cache) and os.path.getmtime(cache) > os.path.getmtime(spider.__file__):
@@ -175,7 +178,8 @@ def main():
         sp.img = img
     else:
         sp = Spider(img)
-        sp.add_func(base)
+        if not nobase:
+            sp.add_func(base)
         for x in extra: sp.add_func(x)
         sp.run()
         firm_funcs = set(sp.funcs)
