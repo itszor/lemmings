@@ -26,6 +26,9 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <signal.h>
+#include <pthread.h>
+#include <unistd.h>
 #include "runtime.h"
 #include "os.h"
 
@@ -111,17 +114,20 @@ static uint64_t interp_count, smc_count;
 static const char *outprefix = "recomp";
 static int interactive, full_os, interp_only;                 /* SDL window, real time / VDU+sprite drivers */
 static uint64_t next_tick_ns, next_vsync_ns, t0_ns;
+static volatile uint64_t last_service_ns;   /* watchdog: last time rt_service() ran a vsync */
 static int last_buttons;
 /* --script=ms:action[:args],...  actions: click:x:y (OS units), tap:px:py (a host
-   click at screen pixel px,py, through the real SDL event path), release, buttons:mask,
+   click at screen pixel px,py, through the real SDL event path), poke:addr:value (write a
+   memory word - e.g. poke:0x19d44:5 on the title screen starts at level 6), release, buttons:mask,
    move:dx:dy, key:inkey (held 200ms), type:ascii, shot, quit                         */
-static struct { uint64_t ms; char act[8]; int a, b; } script[1024];
+#define MAXSCRIPT 8192
+static struct { uint64_t ms; char act[8]; int a, b; } script[MAXSCRIPT];
 static int nscript, script_i, shots;
 static uint64_t key_release_ms[129];
 
 static void parse_script(const char *p)
 {
-    while (*p && nscript < 1024) {
+    while (*p && nscript < MAXSCRIPT) {
         int n = 0;
         script[nscript].ms = strtoull(p, (char **)&p, 10);
         if (*p == ':') p++;
@@ -144,6 +150,7 @@ static void run_script(void)
         int x = script[script_i].a, y = script[script_i].b;
         if (!strcmp(a, "click")) { mouse_x = x; mouse_y = y; mouse_buttons = 4; }
         else if (!strcmp(a, "tap")) display_inject_tap(x, y);
+        else if (!strcmp(a, "poke")) WR32((uint32_t)x, (uint32_t)y);
         else if (!strcmp(a, "release")) mouse_buttons = 0;
         else if (!strcmp(a, "buttons")) mouse_buttons = x;
         else if (!strcmp(a, "move")) { mouse_x += x; mouse_y += y; }
@@ -159,7 +166,13 @@ static void run_script(void)
 
 /* TEMP: PC histogram after a threshold, to see what LemProg is doing once
  * it stops making OS_File progress (see README) - printed from finish(). */
-#define PCHIST 8192
+/* Open-addressed with a bounded probe: once more distinct PCs have run than
+ * the table holds (LemProg alone has ~9900 translated instructions, plus the
+ * module), an unbounded probe for a new PC never terminates - which froze the
+ * whole game a while into busier levels (e.g. Fun 6). Now a PC that can't
+ * find a slot within PCHIST_PROBE just isn't counted. */
+#define PCHIST 65536
+#define PCHIST_PROBE 32
 static struct { uint32_t a; uint64_t n; } pchist[PCHIST];
 uint32_t g_cur_pc;                      /* TEMP: for watch_write() below */
 void dbg_hook(uint32_t a)
@@ -167,8 +180,8 @@ void dbg_hook(uint32_t a)
     g_cur_pc = a;
     if (icount < 700000) return;
     unsigned h = (a >> 2) % PCHIST;
-    while (pchist[h].n && pchist[h].a != a) h = (h + 1) % PCHIST;
-    pchist[h].a = a; pchist[h].n++;
+    for (int k = 0; k < PCHIST_PROBE; k++, h = (h + 1) % PCHIST)
+        if (!pchist[h].n || pchist[h].a == a) { pchist[h].a = a; pchist[h].n++; return; }
 }
 /* TEMP: log the first few distinct-pc writes into [lo,hi) from anywhere,
  * with the pc that did it - see README. Currently watching SCREEN itself,
@@ -280,6 +293,7 @@ static void module_swi(uint32_t b, int x)
     if (!mod_size) return;
     uint32_t r10 = R[10], r11 = R[11], r12 = R[12];
     R[11] = b & 0x3F; R[12] = MOD_PRIVATE;
+    if ((MODEBITS & 3) == 0) bank_r13[3] = SVC_STACK;   /* a SWI from USR mode starts on an empty SVC stack */
     module_call(MODBASE + RD32(MODBASE + 0x20), MODE_SVC, HANDLER_RET | (PSR() & ~0x10000000u));
     R[10] = r10; R[11] = r11; R[12] = r12;
     if (VF && !x) fprintf(stderr, "musmod2: SWI &%x returned an error: %s\n", b, (char *)MEM + ((R[0] + 4) & 0x3FFFFFF));
@@ -311,6 +325,7 @@ static void sound_dma_fill(void)
         uint32_t saved[16], sf[4] = {NF, ZF, CF, VF};
         memcpy(saved, R, sizeof R);
         R[9] = snd_level1; R[10] = buf + len; R[11] = snd_nchan; R[12] = buf;
+        bank_r13[2] = IRQ_STACK;               /* each interrupt starts on an empty IRQ stack */
         module_call(RD32(snd_level1), MODE_IRQ, HANDLER_RET | MODE_IRQ);
         memcpy(R, saved, sizeof R);
         NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
@@ -781,6 +796,7 @@ static void rt_service(int vsync_now)
             screenshot_requested = 0;
         }
         if (quit_requested) finish("window closed");
+        last_service_ns = now;
         display_present(displayed(), screen_width());
         monotonic += 2;
         hw_irq_frame();
@@ -1442,6 +1458,41 @@ static fn_t *build_tab(const struct entry *ents, unsigned n, uint32_t base, uint
     return tab;
 }
 
+/* Freeze diagnostics. The window only stays alive while the main loop keeps
+ * reaching rt_service(); anything that stops it (a runaway loop inside a
+ * synthetic handler or module call, where interrupts are held off) freezes
+ * the whole window. The watchdog reports where the CPU is once the main loop
+ * has gone 3s without servicing the display; Ctrl-C / SIGTERM print the
+ * same plus the PC histogram before exiting. */
+static void report_state(const char *why)
+{
+    fprintf(stderr, "%s: pc=%08x npc=%08x icount=%llu in_handler=%d in_module=%d mode=%u boot_mode=%d "
+            "img=%08x-%08x\n", why, g_cur_pc, npc, (unsigned long long)icount, in_handler, in_module,
+            MODEBITS & 3, boot_mode, img_base, img_end);
+}
+static void on_signal(int sig)
+{
+    static volatile sig_atomic_t once;
+    (void)sig;
+    if (once++) _exit(1);
+    report_state("interrupted");
+    dump_pchist();
+    _exit(1);
+}
+static void *watchdog(void *arg)
+{
+    (void)arg;
+    int reported = 0;
+    for (;;) {
+        sleep(1);
+        uint64_t last = last_service_ns, now = display_ticks_ns();
+        if (last && now - last > 3000000000ull) {
+            if (!reported) { report_state("main loop stalled for 3s"); reported = 1; }
+        } else reported = 0;
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv)
 {
     const char *image = "../extracted_decompressed/LemProg.bin";
@@ -1453,6 +1504,9 @@ int main(int argc, char **argv)
     for (int k = 1; k < argc; k++)
         if (!strncmp(argv[k], "--limit=", 8) || !strcmp(argv[k], "--headless")) headless = 1;
     interactive = full_os = !headless;
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
+    if (interactive) { pthread_t wd; pthread_create(&wd, NULL, watchdog, NULL); pthread_detach(wd); }
     if (interactive) { limit = ~0ull; nclicks = 0; nkeys = 0; }
     for (int k = 1; k < argc; k++) {
         if (!strncmp(argv[k], "--limit=", 8)) limit = (uint64_t)strtod(argv[k] + 8, 0);

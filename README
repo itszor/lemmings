@@ -1347,3 +1347,32 @@ the OS mouse bounding box.
     it keeps the pointer to game y 80-174, i.e. below the map preview's
     palette split at line 76 - which is why the pointer used to show in
     the wrong colour when it strayed up there.
+
+FIXED - hard freeze a while into busier levels (e.g. Fun 6, "A task for
+blockers and bombers"). This was not the game: dbg_hook(), the
+always-on PC histogram behind the "pchist" exit report, used an
+8192-slot open-addressed table with an unbounded linear probe. LemProg
+alone has ~9900 translated instructions, and the module adds more, so
+once a session had executed more than 8192 distinct addresses, the next
+new PC probed forever: the whole process hung, window included. Before
+that, the probes got ever longer as the table filled, so busier levels
+also ran far slower (a stuck session measured 6815/8192 slots used and
+~14M instructions/s). Fixed: 64K slots, probe bounded to 32 (a PC that
+can't find a slot just isn't counted). The same level-6 session now
+runs at ~270M instructions/s for 400s without a stall.
+
+Diagnostics added while chasing it:
+  - a watchdog thread reports the PC/context ("main loop stalled for 3s:
+    pc=... in_handler=... in_module=...") if the main loop stops
+    servicing the window for 3s;
+  - Ctrl-C/SIGTERM print the same, plus the PC histogram, before exiting;
+  - `--script poke:addr:value` writes a memory word. LemProg's current
+    level is [&19d18+&2c] (0-based, indexing the level table at &1ec48),
+    so `--script=4000:poke:0x19d44:5,5000:tap:35:180,...` starts at Fun
+    level 6. Scripts can now be up to 8192 entries.
+
+Not a bug, but noted: on levels with differently-sized objects, a
+second sprite plotter self-modifies its ldm/stm at &24478/&24540 into
+register lists the analysis never saw (e.g. e8990003/e8890003), so those
+run through the interpreter (~150-250K instructions per level) - correct
+but slower than translated code.

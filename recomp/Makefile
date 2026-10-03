@@ -5,7 +5,7 @@ GEN     := $(wildcard gen/code*.c) gen/entries.c
 GENBOOT := $(wildcard genboot/code*.c) genboot/entries.c
 GENMUS  := $(wildcard genmus/code*.c) genmus/entries.c
 OBJ     := $(GEN:.c=.o) $(GENBOOT:.c=.o) $(GENMUS:.c=.o) runtime.o vdu.o display.o sound.o
-LIBS    := $(shell pkg-config --libs sdl3) -lm
+LIBS    := $(shell pkg-config --libs sdl3) -lm -lpthread
 SDLCF   := $(shell pkg-config --cflags sdl3)
 
 lemmings: $(OBJ)
