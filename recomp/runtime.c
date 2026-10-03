@@ -788,16 +788,8 @@ static void rt_service(int vsync_now)
         next_vsync_ns += 2 * CS_NS;
         display_poll();
         if (nscript) run_script();
-        if (screenshot_requested) {
-            char fn[64];
-            snprintf(fn, sizeof fn, "screenshot-%d.bmp", ++shots);
-            display_screenshot(displayed(), screen_width(), fn);
-            fprintf(stderr, "saved %s\n", fn);
-            screenshot_requested = 0;
-        }
         if (quit_requested) finish("window closed");
         last_service_ns = now;
-        display_present(displayed(), screen_width());
         monotonic += 2;
         hw_irq_frame();
         /* &84e8/&84ec are LemProg's fade-in/fade-out requests (the exact
@@ -814,6 +806,18 @@ static void rt_service(int vsync_now)
             uint32_t m[5] = {10, mouse_x, mouse_y, mouse_buttons, monotonic};
             call_vector(0x10, 5, m);
         }
+        /* Present last: on real hardware, what the game does at flyback -
+         * the palette push (hw_irq_frame), the bank flip and pointer redraw
+         * (its vsync event, &2a70c) - shows in the frame scanned out right
+         * after it. Presenting first made all of that a frame (20ms) late. */
+        if (screenshot_requested) {
+            char fn[64];
+            snprintf(fn, sizeof fn, "screenshot-%d.bmp", ++shots);
+            display_screenshot(displayed(), screen_width(), fn);
+            fprintf(stderr, "saved %s\n", fn);
+            screenshot_requested = 0;
+        }
+        display_present(displayed(), screen_width());
     }
 }
 
@@ -1500,7 +1504,7 @@ int main(int argc, char **argv)
     const char *musmod_image = "../extracted/!LEMMINGS/musmod2,fffffa43-00000000";
     int scale = 4, headless = 0, no_title = 0, want_boot = 0;
     const char *fs = NULL, *wavpath = NULL;
-    int no_sound = 0;
+    int no_sound = 0, crt = 0;
     for (int k = 1; k < argc; k++)
         if (!strncmp(argv[k], "--limit=", 8) || !strcmp(argv[k], "--headless")) headless = 1;
     interactive = full_os = !headless;
@@ -1518,6 +1522,7 @@ int main(int argc, char **argv)
         else if (!strncmp(argv[k], "--bootimg=", 10)) boot_image = argv[k] + 10;
         else if (!strcmp(argv[k], "--fullscreen")) fs = "";
         else if (!strcmp(argv[k], "--no-sound")) no_sound = 1;
+        else if (!strcmp(argv[k], "--crt")) crt = 1;
         else if (!strncmp(argv[k], "--wav=", 6)) wavpath = argv[k] + 6;
         else if (!strncmp(argv[k], "--fullscreen=", 13)) fs = argv[k] + 13;
         else if (!strcmp(argv[k], "--list-modes")) { display_list_modes(); return 0; }
@@ -1538,7 +1543,7 @@ int main(int argc, char **argv)
     snprintf(fn, sizeof fn, "%s.events", outprefix);
     evlog = fopen(fn, "w");
     if (interactive) {
-        if (!display_init(scale, fs)) return 1;
+        if (!display_init(scale, fs, crt)) return 1;
         if (!no_sound && !wavpath) sound_init_device();
         t0_ns = next_tick_ns = next_vsync_ns = display_ticks_ns();
     }

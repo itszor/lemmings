@@ -1376,3 +1376,33 @@ second sprite plotter self-modifies its ldm/stm at &24478/&24540 into
 register lists the analysis never saw (e.g. e8990003/e8890003), so those
 run through the interpreter (~150-250K instructions per level) - correct
 but slower than translated code.
+
+Display: one frame less latency, and an optional CRT shader (--crt)
+-------------------------------------------------------------------
+  - Latency: rt_service() used to present the screen at the *start* of each
+    emulated vsync, before running the hardware-IRQ palette handler and
+    the game's vsync event (the bank flip and the pointer redraw, &2a70c).
+    So the flip, the palette change and the pointer movement all reached
+    the screen one frame (20ms) late. Now the present (and --script shot)
+    comes last, as on real hardware, where what the game does at flyback
+    shows in the very next frame. Checked by moving the pointer and
+    taking a screenshot in the same vsync: the crosshair is already at
+    the new position.
+  - The screen texture is now exactly the game screen (one texel per
+    pixel, 320x256 in mode 9), recreated if the width changes, instead of
+    a fixed 640-wide texture with a sub-rectangle.
+  - --crt: uses SDL 3.4's GPU renderer and runs shaders/crt.frag over that
+    texture as it's scaled to the window, through SDL_GPURenderState: a
+    custom fragment shader on an otherwise standard SDL renderer, so
+    letterboxing, fullscreen and presenting are unchanged. The shader does
+    gaussian per-row scanlines (beam width grows with brightness),
+    sharpened horizontal interpolation, an aperture-grille mask per 3
+    output pixels, and gamma-correct blending. Its tunables are constants
+    at the top of the file. The compiled SPIR-V is committed as
+    shaders/crt.frag.spv.h. After editing the shader, regenerate it with
+    shaders/build.sh, which needs glslang from
+    github.com/KhronosGroup/glslang/releases (set GLSLANG=/path/to/glslang).
+    Only SPIR-V (Vulkan) is built in, so on a device without it (Metal,
+    D3D12-only) --crt says so and falls back to the plain scaler.
+    In --crt mode a screenshot (F12 / --script shot) also saves the shaded
+    frame as screenshot-N-crt.bmp.

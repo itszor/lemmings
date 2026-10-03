@@ -17,7 +17,7 @@ extern unsigned vdu_unhandled;
 extern int vdu_mode;
 
 /* display.c (SDL3) */
-int  display_init(int scale, const char *fullscreen);   /* NULL, "" or "WxH[@Hz]" */
+int  display_init(int scale, const char *fullscreen, int crt);   /* fullscreen: NULL, "" or "WxH[@Hz]" */
 void display_toggle_fullscreen(void);
 void display_list_modes(void);
 void display_present(const uint8_t *pixels, int width);   /* width x 256 bytes, 8bpp */

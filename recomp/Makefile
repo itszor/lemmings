@@ -29,7 +29,7 @@ vdu.o: vdu.c runtime.h os.h
 sound.o: sound.c runtime.h os.h
 	$(CC) $(CFLAGS) $(SDLCF) -c -o $@ $<
 
-display.o: display.c os.h
+display.o: display.c os.h shaders/crt.frag.spv.h
 	$(CC) $(CFLAGS) $(SDLCF) -c -o $@ $<
 
 regen:

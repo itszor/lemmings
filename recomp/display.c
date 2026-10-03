@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "os.h"
+#include "shaders/crt.frag.spv.h"           /* shaders/crt.frag, see shaders/build.sh */
 
 uint8_t key_down[128];
 int mouse_x = 640, mouse_y = 512, mouse_buttons;
@@ -16,6 +17,10 @@ int quit_requested, escape_pressed;
 static SDL_Window *win;
 static SDL_Renderer *ren;
 static SDL_Texture *tex;
+static int tex_w;                               /* texture is exactly the game screen: tex_w x 256 */
+static SDL_GPUShader *crt_shader;               /* --crt: custom fragment shader on the GPU renderer */
+static SDL_GPURenderState *crt_state;
+static char crt_capture[80];                    /* --crt screenshot: also save the shaded frame */
 static uint32_t palette[256];
 static int kbuf[64], khead, ktail;
 static SDL_DisplayMode fs_mode;                 /* exclusive fullscreen mode, if chosen */
@@ -153,17 +158,52 @@ void display_list_modes(void)
 }
 
 /* spec: NULL windowed, "" desktop fullscreen, "WxH[@Hz]" exclusive mode */
-int display_init(int scale, const char *fs)
+/* --crt: SDL 3.4's GPU renderer runs our fragment shader (shaders/crt.frag)
+ * over the 1:1 game texture when it's drawn to the window - the rest of the
+ * renderer (letterboxing, fullscreen, presenting) is unchanged. Only SPIR-V
+ * (Vulkan) is built in; anything else falls back to the plain scaler. */
+static int crt_init(void)
+{
+    SDL_GPUDevice *dev = SDL_GetGPURendererDevice(ren);
+    if (!dev) return 0;
+    if (!(SDL_GetGPUShaderFormats(dev) & SDL_GPU_SHADERFORMAT_SPIRV)) {
+        SDL_Log("--crt: GPU device has no SPIR-V support");
+        return 0;
+    }
+    SDL_GPUShaderCreateInfo si;
+    SDL_zero(si);
+    si.code = (const Uint8 *)crt_frag_spv;
+    si.code_size = sizeof crt_frag_spv;
+    si.entrypoint = "main";
+    si.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    si.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+    si.num_samplers = 1;
+    si.num_uniform_buffers = 1;
+    crt_shader = SDL_CreateGPUShader(dev, &si);
+    if (!crt_shader) { SDL_Log("--crt: shader: %s", SDL_GetError()); return 0; }
+    SDL_GPURenderStateCreateInfo ri;
+    SDL_zero(ri);
+    ri.fragment_shader = crt_shader;
+    crt_state = SDL_CreateGPURenderState(ren, &ri);
+    if (!crt_state) { SDL_Log("--crt: render state: %s", SDL_GetError()); return 0; }
+    return 1;
+}
+
+int display_init(int scale, const char *fs, int crt)
 {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         SDL_Log("SDL_Init: %s", SDL_GetError());
         return 0;
     }
-    if (!SDL_CreateWindowAndRenderer("Lemmings (recompiled)", 256 * scale, 192 * scale,
-                                     SDL_WINDOW_RESIZABLE, &win, &ren)) {
-        SDL_Log("window: %s", SDL_GetError());
-        return 0;
+    win = SDL_CreateWindow("Lemmings (recompiled)", 256 * scale, 192 * scale, SDL_WINDOW_RESIZABLE);
+    if (!win) { SDL_Log("window: %s", SDL_GetError()); return 0; }
+    if (crt) {
+        ren = SDL_CreateRenderer(win, SDL_GPU_RENDERER);
+        if (!ren) SDL_Log("--crt: no GPU renderer (%s); using the plain one", SDL_GetError());
+        else if (!crt_init()) { SDL_Log("--crt unavailable; using the plain renderer"); SDL_DestroyRenderer(ren); ren = NULL; }
     }
+    if (!ren) ren = SDL_CreateRenderer(win, NULL);
+    if (!ren) { SDL_Log("renderer: %s", SDL_GetError()); return 0; }
     SDL_SetRenderLogicalPresentation(ren, LW, LH, SDL_LOGICAL_PRESENTATION_LETTERBOX);
     SDL_HideCursor();                            /* the game draws its own pointer */
     if (fs) {
@@ -178,8 +218,6 @@ int display_init(int scale, const char *fs)
         }
         apply_fullscreen();
     }
-    tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, 640, 256);
-    SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
     for (int c = 0; c < 256; c++) {              /* default 256-colour palette (unused for
                                                       Lemmings - see update_palette() below;
                                                       kept as a fallback for --full-os VDU) */
@@ -213,6 +251,12 @@ void display_present(const uint8_t *pix, int width)
     uint32_t *out;
     int pitch;
     update_palette();
+    if (width != tex_w) {                        /* one texel per game pixel */
+        if (tex) SDL_DestroyTexture(tex);
+        tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, width, 256);
+        SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
+        tex_w = width;
+    }
     if (!SDL_LockTexture(tex, NULL, (void **)&out, &pitch)) return;
     for (int y = 0; y < 256; y++) {
         uint32_t *row = (uint32_t *)((uint8_t *)out + y * pitch);
@@ -223,10 +267,22 @@ void display_present(const uint8_t *pix, int width)
         }
     }
     SDL_UnlockTexture(tex);
-    SDL_FRect src = {0, 0, (float)width, 256};
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
-    SDL_RenderTexture(ren, tex, &src, NULL);
+    if (crt_state) {
+        int ow = 0, oh = 0;
+        SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
+        float u[4] = {(float)width, 256.0f, (float)ow, (float)oh};   /* source_size, output_size */
+        SDL_SetGPURenderStateFragmentUniforms(crt_state, 0, u, sizeof u);
+        SDL_SetGPURenderState(ren, crt_state);
+        SDL_RenderTexture(ren, tex, NULL, NULL);
+        SDL_SetGPURenderState(ren, NULL);
+        if (crt_capture[0]) {
+            SDL_Surface *shot = SDL_RenderReadPixels(ren, NULL);
+            if (shot) { SDL_SaveBMP(shot, crt_capture); SDL_DestroySurface(shot); }
+            crt_capture[0] = 0;
+        }
+    } else SDL_RenderTexture(ren, tex, NULL, NULL);
     SDL_RenderPresent(ren);
 }
 
@@ -314,6 +370,9 @@ void display_screenshot(const uint8_t *pix, int width, const char *path)
     }
     SDL_SaveBMP(s, path);
     SDL_DestroySurface(s);
+    if (crt_state) {                             /* the shaded frame is saved by the next present */
+        snprintf(crt_capture, sizeof crt_capture, "%.*s-crt.bmp", (int)strcspn(path, "."), path);
+    }
 }
 int screenshot_requested;
 
