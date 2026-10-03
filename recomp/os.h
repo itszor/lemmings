@@ -29,6 +29,7 @@ extern int mouse_x, mouse_y, mouse_buttons;     /* OS units; 4 select, 2 menu, 1
 extern int quit_requested, escape_pressed;
 int  key_buffer_get(void);
 void display_set_mouse(int x, int y);             /* OS_Word 21,3 */
+void display_inject_tap(int px, int py);          /* --script tap: host click at a screen pixel */
 void key_buffer_put(int c);
 void key_buffer_flush(void);
 void display_screenshot(const uint8_t *pix, int width, const char *path);

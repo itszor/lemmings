@@ -1319,3 +1319,31 @@ along with the module-driven sound effects. Checked by recording --wav
 and looking at the waveforms. The "store to compiled code" notes at
 module+&1da0 onwards are its Samplestarts table, all zero words that the
 analysis classed as code - harmless.
+
+FIXED - mouse: hidden host pointer, exact hit point (touch works), and
+the OS mouse bounding box.
+  - LemProg draws its own software pointer, so the host pointer is now
+    hidden over the window (SDL_HideCursor). The relative-mouse "capture
+    for 0.5s after the game sets the pointer position" behaviour
+    inherited from galactic dan is gone. The host pointer maps absolutely
+    onto the screen, and when the game sets the position (OS_Word 21,3)
+    the host pointer is warped there, but only while it's over the
+    window.
+  - The hit point was 16 rows off. The game scales OS_Mouse to
+    y = (1024-Y)/4 (&2a850), but its own coordinate y=0 is screen row 16:
+    the pointer save-under/draw adds &A00 (16 rows of 160 bytes) to the
+    screen base (&2a9a8), and everything it hit-tests (e.g. the title's
+    START slot, y 148-187) uses the same convention. display.c now maps
+    host pixels with that 64 OS-unit offset (POINTER_Y_OFFSET), so the
+    centre of the game's pointer - its hit point - lands exactly under
+    the host pointer or a touch. Checked with a new `--script tap:px:py`
+    action, which injects a host click at a screen pixel through the real
+    SDL event path: the crosshair centre lands on the tapped pixel, and
+    tapping the digger icon then a lemming makes it dig. Touchscreens
+    work automatically, since SDL turns touches into mouse events.
+  - OS_Word 21,1 (define mouse bounding box) is now honoured: OS_Mouse
+    results and OS_Word 21,3 positions are clamped to it. LemProg sets one
+    box per screen (&19978, &199a4, &199d0). On the level briefing screen
+    it keeps the pointer to game y 80-174, i.e. below the map preview's
+    palette split at line 76 - which is why the pointer used to show in
+    the wrong colour when it strayed up there.

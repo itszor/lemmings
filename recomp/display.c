@@ -18,19 +18,49 @@ static SDL_Renderer *ren;
 static SDL_Texture *tex;
 static uint32_t palette[256];
 static int kbuf[64], khead, ktail;
-static uint64_t last_setpos_ns;                 /* game re-centres the pointer: capture mouse */
-static int relative;
 static SDL_DisplayMode fs_mode;                 /* exclusive fullscreen mode, if chosen */
 static int fs_exclusive, fullscreen;
-#define MOUSE_SENS 2.0f                         /* OS units per host pixel in relative mode */
+#define LW 1024
+#define LH 768
+/* LemProg's pointer coordinates are 16 screen rows (64 OS units) off the
+ * screen's own: it scales OS_Mouse to y = (1024-Y)/4 (&2a850) but draws the
+ * pointer, and lays out everything it hit-tests, relative to row 16 (the
+ * save-under at &2a9a8 adds &A00 = 16 rows of 160 bytes). Map the host
+ * pointer so the game's pointer - and so its hit point - lands exactly
+ * under it (a touch included). */
+#define POINTER_Y_OFFSET 64
 
+/* The host pointer maps absolutely onto the screen (OS units 1280x1024),
+ * so a click or a touch lands exactly where the game's own software pointer
+ * is drawn - the host pointer itself is hidden over the window. When the
+ * game sets the pointer position (OS_Word 21,3), move the host pointer
+ * there too, but only while it's over our window. */
 void display_set_mouse(int x, int y)
 {
     mouse_x = x; mouse_y = y;
-    last_setpos_ns = SDL_GetTicksNS();
+    if (win && SDL_GetMouseFocus() == win) {
+        float wx, wy;
+        SDL_RenderCoordinatesToWindow(ren, (x + 0.5f) * LW / 1280,
+                                      (1023 + POINTER_Y_OFFSET - y + 0.5f) * LH / 1024, &wx, &wy);
+        SDL_WarpMouseInWindow(win, wx, wy);
+    }
 }
-#define LW 1024
-#define LH 768
+
+/* --script tap: press the left button at screen pixel (px,py), as a host
+ * mouse click or touch would, through the same event path. */
+void display_inject_tap(int px, int py)
+{
+    float wx, wy;
+    SDL_RenderCoordinatesToWindow(ren, (px + 0.5f) * LW / 320, (py + 0.5f) * LH / 256, &wx, &wy);
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = SDL_EVENT_MOUSE_MOTION; e.motion.windowID = SDL_GetWindowID(win); e.motion.x = wx; e.motion.y = wy;
+    SDL_PushEvent(&e);
+    SDL_zero(e);
+    e.type = SDL_EVENT_MOUSE_BUTTON_DOWN; e.button.windowID = SDL_GetWindowID(win);
+    e.button.button = SDL_BUTTON_LEFT; e.button.down = true; e.button.x = wx; e.button.y = wy;
+    SDL_PushEvent(&e);
+}
 
 void key_buffer_put(int c)
 {
@@ -135,6 +165,7 @@ int display_init(int scale, const char *fs)
         return 0;
     }
     SDL_SetRenderLogicalPresentation(ren, LW, LH, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    SDL_HideCursor();                            /* the game draws its own pointer */
     if (fs) {
         int w = 0, h = 0;
         float hz = 0;
@@ -212,11 +243,6 @@ static int ascii_for(SDL_Scancode s, int shift)
 void display_poll(void)
 {
     SDL_Event e;
-    int want = last_setpos_ns && SDL_GetTicksNS() - last_setpos_ns < 500000000ull;
-    if (want != relative) {
-        relative = want;
-        SDL_SetWindowRelativeMouseMode(win, relative);
-    }
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
         case SDL_EVENT_QUIT:
@@ -251,18 +277,11 @@ void display_poll(void)
         case SDL_EVENT_MOUSE_MOTION:
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
         case SDL_EVENT_MOUSE_BUTTON_UP: {
-            if (relative) {
-                if (e.type == SDL_EVENT_MOUSE_MOTION) {
-                    mouse_x += (int)(e.motion.xrel * MOUSE_SENS);
-                    mouse_y -= (int)(e.motion.yrel * MOUSE_SENS);
-                }
-            } else {
-                SDL_ConvertEventToRenderCoordinates(ren, &e);
-                float x = e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.x : e.button.x;
-                float y = e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.y : e.button.y;
-                mouse_x = (int)(x * 1280 / LW);
-                mouse_y = 1023 - (int)(y * 1024 / LH);
-            }
+            SDL_ConvertEventToRenderCoordinates(ren, &e);
+            float x = e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.x : e.button.x;
+            float y = e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.y : e.button.y;
+            mouse_x = (int)(x * 1280 / LW);
+            mouse_y = 1023 + POINTER_Y_OFFSET - (int)(y * 1024 / LH);
             if (mouse_x < 0) mouse_x = 0; if (mouse_x > 1279) mouse_x = 1279;
             if (mouse_y < 0) mouse_y = 0; if (mouse_y > 1023) mouse_y = 1023;
             if (e.type != SDL_EVENT_MOUSE_MOTION) {

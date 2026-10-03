@@ -112,7 +112,8 @@ static const char *outprefix = "recomp";
 static int interactive, full_os, interp_only;                 /* SDL window, real time / VDU+sprite drivers */
 static uint64_t next_tick_ns, next_vsync_ns, t0_ns;
 static int last_buttons;
-/* --script=ms:action[:args],...  actions: click:x:y (OS units), release, buttons:mask,
+/* --script=ms:action[:args],...  actions: click:x:y (OS units), tap:px:py (a host
+   click at screen pixel px,py, through the real SDL event path), release, buttons:mask,
    move:dx:dy, key:inkey (held 200ms), type:ascii, shot, quit                         */
 static struct { uint64_t ms; char act[8]; int a, b; } script[1024];
 static int nscript, script_i, shots;
@@ -142,6 +143,7 @@ static void run_script(void)
         const char *a = script[script_i].act;
         int x = script[script_i].a, y = script[script_i].b;
         if (!strcmp(a, "click")) { mouse_x = x; mouse_y = y; mouse_buttons = 4; }
+        else if (!strcmp(a, "tap")) display_inject_tap(x, y);
         else if (!strcmp(a, "release")) mouse_buttons = 0;
         else if (!strcmp(a, "buttons")) mouse_buttons = x;
         else if (!strcmp(a, "move")) { mouse_x += x; mouse_y += y; }
@@ -926,6 +928,12 @@ static uint32_t vduvar(uint32_t v)
 }
 
 static uint32_t swi_pc;
+/* OS_Word 21,1 mouse bounding box (left, bottom, right, top; inclusive, OS
+ * units). LemProg uses it to keep its software pointer inside one palette
+ * region of a split screen - e.g. rows 80-174 on the level briefing screen,
+ * below the map preview's palette split at line 76 (&199a4). */
+static int mbox[4] = {0, 0, 1279, 1023};
+static int clamp_i(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 static int swi_x;         /* set by swi(): was this call X-flagged (error-checking)? */
 static void os_byte(void)
 {
@@ -1109,7 +1117,10 @@ void swi(uint32_t n, uint32_t nextpc)
     case 7: {
         uint8_t *blk = MEM + R[1];
         if (interactive && R[0] == 21 && blk[0] == 3)       /* set mouse position */
-            display_set_mouse((int16_t)(blk[1] | blk[2] << 8), (int16_t)(blk[3] | blk[4] << 8));
+            display_set_mouse(clamp_i((int16_t)(blk[1] | blk[2] << 8), mbox[0], mbox[2]),
+                              clamp_i((int16_t)(blk[3] | blk[4] << 8), mbox[1], mbox[3]));
+        if (R[0] == 21 && blk[0] == 1)                      /* define mouse bounding box: l, b, r, t */
+            for (int k = 0; k < 4; k++) mbox[k] = (int16_t)(blk[1 + 2 * k] | blk[2 + 2 * k] << 8);
         if (R[0] == 12) {                                    /* OS_Word 12: write palette entry.
              * Block is {colour, flag/unused, red, green, blue} - confirmed
              * against two real callers (F_8178, F_8234's 16-colour loop)
@@ -1128,8 +1139,9 @@ void swi(uint32_t n, uint32_t nextpc)
         else ev("OS_Word", "is", R[0], blk, 8);
         return;
     }
-    case 0x1C:
-        if (interactive) { R[0] = mouse_x; R[1] = mouse_y; R[2] = mouse_buttons; R[3] = monotonic; }
+    case 0x1C:                                   /* OS_Mouse: pointer confined to the bounding box */
+        if (interactive) { R[0] = clamp_i(mouse_x, mbox[0], mbox[2]); R[1] = clamp_i(mouse_y, mbox[1], mbox[3]);
+                           R[2] = mouse_buttons; R[3] = monotonic; }
         else { R[0] = 640; R[1] = 512; R[2] = 0; R[3] = monotonic; }
         return;
     case 0x1F: case 0x20:
