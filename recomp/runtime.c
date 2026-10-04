@@ -1149,8 +1149,8 @@ void swi(uint32_t n, uint32_t nextpc)
              * colour 0 ever appeared to be set correctly - see README. */
             unsigned colour = blk[0] & 0xF;                   /* logical colour 0-15 (4bpp) */
             vidc_palette[colour] = blk[2] | (uint32_t)blk[3] << 8 | (uint32_t)blk[4] << 16;
-            fprintf(stderr, "palette: colour %u = #%06x (icount %llu)\n",
-                    colour, vidc_palette[colour], (unsigned long long)icount);
+            /*fprintf(stderr, "palette: colour %u = #%06x (icount %llu)\n",
+                    colour, vidc_palette[colour], (unsigned long long)icount);*/
         }
         if (R[0] == 22 && (blk[0] & 2))                     /* OS_Word 22: set display start */
             display_off = (blk[1] | blk[2] << 8 | blk[3] << 16 | (uint32_t)blk[4] << 24) & 0xFFFFF;
