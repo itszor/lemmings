@@ -1406,3 +1406,17 @@ Display: one frame less latency, and an optional CRT shader (--crt)
     D3D12-only) --crt says so and falls back to the plain scaler.
     In --crt mode a screenshot (F12 / --script shot) also saves the shaded
     frame as screenshot-N-crt.bmp.
+
+2026-10: the runtime moved to libroger
+--------------------------------------
+recomp/runtime.c, runtime.h, display.c, sound.c, vdu.c, os.h and shaders/
+were replaced by libroger (~/stuff/libroger), the RISC OS runtime now shared
+by the recompilations; what is specific to Lemmings is in recomp/game.c:
+the three images (LemProg; LemBoot, chain-loading LemProg and running from
+its relocated copy at &40000; MusicModule, RMLoaded at &1800000), the raw
+IRQ handler at &100 (the palette and the panel's palette split), WimpSlot,
+the stack at &A8000, the pointer offset, --boot/--bootimg, and LemBoot's
+return through the hardware vectors. References to runtime.c above describe
+the code as it was. Headless runs (--limit) give the same events, VDU
+stream, screen memory, registers and sound as before, except that OS_Byte 14
+calls are now logged and LemBoot's Sound_Speaker sees the speaker on.
