@@ -190,7 +190,10 @@ class Recomp:
         # jumped to. Needed for e.g. &19388/&2a3a0: real code with no static
         # caller anywhere (found only by running --trace-gaps), most likely
         # a level-object/skill dispatch table built at runtime.
-        L = set(self.code)
+        # With SuperSpider's analysis (make regen) the leaders are instead
+        # the addresses it knows control can arrive at indirectly
+        # ("ss_dispatch": entries, return sites, jump targets, roots).
+        L = set(self.j['ss_dispatch']) if 'ss_dispatch' in self.j else set(self.code)
         for a in self.code:
             w = self.word(a)
             if a in self.g.labels:

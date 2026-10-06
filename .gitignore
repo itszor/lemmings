@@ -32,3 +32,6 @@ recomp/*.trace
 recomp/*.log
 recomp/screenshot-*.bmp
 recomp/*.wav
+
+# SuperSpider analysis output (make regen)
+superspider/out/

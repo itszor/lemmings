@@ -1,0 +1,2 @@
+# Extra SuperSpider entry points for musmod, one address per line ("make roots"
+# adds the gap entries a --trace-gaps run found).
