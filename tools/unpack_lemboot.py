@@ -34,7 +34,7 @@ import os
 import struct
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.environ.get('SUPERSPIDER', os.path.expanduser('~/stuff/superspider')), 'tools'))
 import arm2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -58,7 +58,7 @@ TARGETS = {
 def resolve(path):
     """Resolve a RISC OS path like '<Lem$Dir>.Lemmings.LemProg' to a host
     path under extracted/, matching path components case-insensitively and
-    ignoring the ',load-exec' suffix extract.py appends."""
+    ignoring the ',load-exec' suffix adf_extract.py appends."""
     assert path.startswith('<Lem$Dir>.')
     parts = path[len('<Lem$Dir>.'):].split('.')
     cur = ROOT

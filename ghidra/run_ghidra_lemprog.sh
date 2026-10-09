@@ -15,7 +15,7 @@ fi
 # Seeding it here lets spider's own recursive trace discover everything
 # downstream properly, instead of it staying speculative/unreached: this
 # one entry point took firm (non-speculative) coverage from ~0.1% to ~23%.
-python3 "$HERE/export_ghidra.py" "$IMG" 8000 "$HERE/lemprog.json" 0x19388
+python3 "${SUPERSPIDER:-$HOME/stuff/superspider}/tools/export_ghidra.py" "$IMG" 8000 "$HERE/lemprog.json" 0x19388
 rm -rf "$HERE/project/LemProg.gpr" "$HERE/project/LemProg.rep"
 mkdir -p "$HERE/project" "$HERE/out/lemprog"
 "$G/support/analyzeHeadless" "$HERE/project" LemProg \

@@ -14,14 +14,14 @@ Unlike Galactic Dan's disc, this one is NOT copy protected: no encrypted
 loader, no protection module/track. !Run just RMLoads two modules and runs
 a boot file in the clear.
 
-tools/                  ADFSlib.py (github.com/dcf21/adfslib, vendored) reads
-                         the ADFS-E layout correctly; tools/adfsd_old.py
-                         (galactic dan's old-map extractor) does NOT work on
-                         this disc - wrong map format, kept only for
-                         reference. extract.py rebuilds extracted/ from the
-                         .adf. arm2.py is galactic dan's ARM2 emulator (used
-                         both for the notes above and, now, for real work -
-                         see unpack_lemboot.py below).
+tools/                  tools/adfsd_old.py (galactic dan's old-map
+                         extractor) does NOT work on this disc - wrong map
+                         format, kept only for reference. SuperSpider's
+                         tools/adf_extract.py (~/stuff/superspider; ADFSlib,
+                         github.com/dcf21/adfslib, vendored there) rebuilds
+                         extracted/ from the .adf, and its tools/arm2.py
+                         (galactic dan's ARM2 emulator) runs LemBoot's own
+                         unpacker - see unpack_lemboot.py below.
 
 extracted/              !LEMMINGS/ application tree, as stored on disc:
                            !Run, !RunCold      Obey files (see below)
@@ -160,7 +160,7 @@ bug in a bit-level compression algorithm. Concretely, for LemProg:
   - The loader issues `OS_File 255` ("load object at the given address")
     for "<Lem$Dir>.Lemmings.LemProg" - our emulated SWI handler resolves
     that RISC OS path against extracted/ (case-insensitively, stripping the
-    ",load-exec" suffix extract.py adds) and copies the real file's bytes
+    ",load-exec" suffix adf_extract.py adds) and copies the real file's bytes
     into emulated memory at &8000.
   - It then calls the unpacker at file offset &8468 (the same LZ-style
     routine visible from &84a4-&8620 in a disassembly - self-modifying,

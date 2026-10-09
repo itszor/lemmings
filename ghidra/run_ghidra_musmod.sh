@@ -30,7 +30,7 @@ for off in 0x684 0x9d4 0x4f4 0x570 \
     seeds="$seeds $(printf '0x%x' $((B + off)))"
 done
 rm -f "$HERE/musmod.json.pickle"
-python3 "$HERE/export_ghidra.py" "$IMG" 1800000 "$HERE/musmod.json" nobase $seeds
+python3 "${SUPERSPIDER:-$HOME/stuff/superspider}/tools/export_ghidra.py" "$IMG" 1800000 "$HERE/musmod.json" nobase $seeds
 rm -rf "$HERE/project/MusMod.gpr" "$HERE/project/MusMod.rep"
 mkdir -p "$HERE/project" "$HERE/out/musmod"
 "$G/support/analyzeHeadless" "$HERE/project" MusMod \

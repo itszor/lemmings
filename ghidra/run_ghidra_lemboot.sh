@@ -15,7 +15,7 @@ IMG="$HERE/../extracted/!LEMMINGS/LemBoot,fffff843-00000000"
 # runtime transparently redirects any jump into the relocated copy back
 # to these original addresses (see call_addr()), so seeding this one
 # entry point here is enough for spider to discover the real code.
-python3 "$HERE/export_ghidra.py" "$IMG" 8000 "$HERE/lemboot.json" 0x82c0
+python3 "${SUPERSPIDER:-$HOME/stuff/superspider}/tools/export_ghidra.py" "$IMG" 8000 "$HERE/lemboot.json" 0x82c0
 rm -rf "$HERE/project/LemBoot.gpr" "$HERE/project/LemBoot.rep"
 mkdir -p "$HERE/project" "$HERE/out/lemboot"
 "$G/support/analyzeHeadless" "$HERE/project" LemBoot \
