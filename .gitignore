@@ -35,3 +35,13 @@ recomp/*.wav
 
 # SuperSpider analysis output (make regen)
 superspider/out/
+
+# The original discs and everything made from them: build.sh (recipe.json)
+# remakes them from the user's own copy.
+*.adf
+*.zip
+extracted/
+extracted_decompressed/
+game/
+asm/*/*.s
+docs/*.png

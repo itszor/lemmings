@@ -47,8 +47,8 @@ SS      ?= $(HOME)/stuff/superspider
 SSBIN   := $(SS)/_build/default/bin/main.exe
 SSD     := ../superspider
 LEMPROG := ../extracted_decompressed/LemProg.bin
-LEMBOOT := ../extracted/!LEMMINGS/LemBoot,fffff843-00000000
-MUSMOD  := ../extracted/!LEMMINGS/musmod2,fffffa43-00000000
+LEMBOOT := ../game/!LEMMINGS/LemBoot,fffff843-00000000
+MUSMOD  := ../game/!LEMMINGS/musmod2,fffffa43-00000000
 LOG     ?= untranslated.log
 
 # $(call analyse,name,image,base[,--module])

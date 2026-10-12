@@ -1,6 +1,21 @@
 Lemmings (RISC OS/Acorn Archimedes, 1992, Krisalis) - reverse engineering and
 static recompilation, following the same approach as ../galactic dan.
 
+A recipe: this repository holds no game data. It rebuilds the game from
+your own copy, recognised by content (recipe.json):
+
+    ./build.sh "Lemmings (1991)(Krisalis).zip"      (the TOSEC zip, or the .adf)
+    cd recomp && ./lemmings
+
+build.sh runs recipe.json's steps with SuperSpider's tools/weave.py
+(~/stuff/superspider, or $SUPERSPIDER): it extracts the disc to
+extracted/disc and !LEMMINGS to game/ (libroger's appdir; "extracted/"
+below), runs LemBoot's unpacker (tools/unpack_lemboot.py ->
+extracted_decompressed/), then make regen (SuperSpider) and make. Needs
+python3, OCaml/dune, gcc and SDL3. The disassemblies (asm/*/*.s) and the
+splash screen previews (docs/*.png) the notes below mention are no longer
+in the repository either (they're in its history).
+
 Disc images
 -----------
 "Lemmings (1991)(Krisalis).adf"      819200 bytes, ADFS-E format (800K "new

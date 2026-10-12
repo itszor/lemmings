@@ -1,0 +1,108 @@
+{
+ "name": "lemmings",
+ "title": "Lemmings (Krisalis / Psygnosis, 1991)",
+ "platform": "acorn-archimedes",
+ "doc": "A recipe: how to turn a user's own copy of the game into a native executable. It holds no game data: the inputs are recognised by content (see $SS/tools/weave.py).",
+ "inputs": {
+  "containers": {
+   "Lemmings (1991)(Krisalis).zip": "5220d217b46f7c39d9b600dac1e2d96f02f910d24a430b97db7c00cd3ecbab6d"
+  },
+  "formats": [
+   "adf",
+   "zip"
+  ]
+ },
+ "discs": [
+  {
+   "name": "disc",
+   "title": "Lemmings (the 819200-byte dump; the [a] dump isn't used)",
+   "known_images": [
+    "63928cbd6780382ca1adb2ea0580d1bbbe167d3d4d2d4f13caee9fed8c885f04"
+   ],
+   "key_files": {
+    "!LEMMINGS/!Run": "5bf9c189ef4a2886ebdbfe017314613ff9e5dabb072fcca0e7cef9e053898a28",
+    "!LEMMINGS/!RunCold": "44055e192cc37ea3c54f6948ab1598d0cc4557dc660badb2727ad0063f5f0e51",
+    "!LEMMINGS/!Sprites": "93272efd3d7acbbd5e120fc5f807ab0084faf3f59a61126e1e70e090b01755da",
+    "!LEMMINGS/Boot": "133efd8a5cfc8d117c0e96607420a3b6df6cff31ebd46c2b02d7734ebb079744",
+    "!LEMMINGS/LRestMouse": "7c142748bd5afd341ec9fe81c988b82587c5b91679d857857fe2639a1b6f4151",
+    "!LEMMINGS/LemBoot": "dafc5ba7b1f685e6236586bf999d01536893ea5e6d476bc862b375b1f2f772b9",
+    "!LEMMINGS/Lemmings/DmaLogo": "ab6008c4e976df195d84bdd6408a20cca0ed7f329b5e867beb6f897671bb9506",
+    "!LEMMINGS/Lemmings/Fred": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+    "!LEMMINGS/Lemmings/Krisalis": "f5139e189d07c840c6c9b335b9e6862177b6d74290b49a5ca5bb87bc996d0f75",
+    "!LEMMINGS/Lemmings/LemGrafP": "a60ea4f3b63b5194bcab89148dd7846cd02548a4033b39d044a7e3362983f398",
+    "!LEMMINGS/Lemmings/LemGrafix/ArcGrn1P": "b6b8789a40fd0af3f06fe74292e1fd722b8cc8b15623a2a3192988083c1cacda",
+    "!LEMMINGS/Lemmings/LemGrafix/ArcGrn2P": "359d31029253ee519042749cb0503fd021e2c804f9d8b5dfccb77b1fcb0fdd4d",
+    "!LEMMINGS/Lemmings/LemGrafix/ArcGrn3P": "ecfe51ec30fed732ffab23ceb84d42ec6f2541b2624bbb89f8518b1ecda991ea",
+    "!LEMMINGS/Lemmings/LemGrafix/ArcGrn4P": "ee1124f9ef192349e52875479afd1c4a1bd93a9bafafacbffe5d6d822aa7c7b2",
+    "!LEMMINGS/Lemmings/LemGrafix/ArcGrn5P": "25df183bd9f63ced3f95009584de6d21469f9a6bb899159f55a6a33fa5b89d34",
+    "!LEMMINGS/Lemmings/LemGrafix/ArcObj1P": "2b58637b5267bd95e6af68cdb3e2034c388564c30af4c124982cb1b81add962f",
+    "!LEMMINGS/Lemmings/LemGrafix/ArcObj2P": "df33771d80e874062a466479fa2b55c93fa2d1085566fa98a8d63b49069284b7",
+    "!LEMMINGS/Lemmings/LemGrafix/ArcObj4P": "d782f5dd02624bc4fa11b089638a49b106197ffebfdc5d4c7dfcef301e3d9710",
+    "!LEMMINGS/Lemmings/LemGrafix/Arcobj3P": "783fc222665f4e56668aaf240661c073e6a97866542c3bd2016e5db2fe69f15b",
+    "!LEMMINGS/Lemmings/LemGrafix/Arcobj5P": "58a9b9666449f396cc09c7b233294e48793f6b8fc11b84215e5a707c17bde324",
+    "!LEMMINGS/Lemmings/LemGrafix/Arcpan1p": "c58899c61e07f6239229270fd494d9ccbf469eb9c8c8e87f272a7db4666ab063",
+    "!LEMMINGS/Lemmings/LemGrafix/SPECIAL0": "e6de961ef8c8b33fa69b41fc9c37640e96311b712c190ab3060fb3b8b3d9c7e4",
+    "!LEMMINGS/Lemmings/LemGrafix/SPECIAL1": "9cec29a7ff665f75d265cef9256aa3685ea1b9709d6fc7cba34d6e36dbdb051d",
+    "!LEMMINGS/Lemmings/LemGrafix/SPECIAL2": "89e840e7bde9f29cfef07f2512a84d246dcb37c71375dd5ed4caedfb6b76c636",
+    "!LEMMINGS/Lemmings/LemGrafix/SPECIAL3": "b7cb2e00cfdb80f0a806880b1bd8ffb5ac2e96d3199f0c82f4de6bb7277fba0f",
+    "!LEMMINGS/Lemmings/LemLevels/LEMMUS0": "f15dd231b49c74f339285e80122ba7a0e0cb0b07e8765e5254e040328bdfab5e",
+    "!LEMMINGS/Lemmings/LemLevels/LEMMUS1": "0cee41dc330b6e31d28c7f6f66579bb43b31705680fb8ce6fedf6fbdac84a0cf",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL000": "2b69d1d4b76c6c9f8daa36d10dc1862d7ee5b12dcde9831b619d5d3a4f602b08",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL001": "b36523df62c174eb6f38e8f824b791128a36d79e0ab759229dac9844b3257f36",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL002": "fd5153c3bb1762e734dfe73fe6aa459d5b837155a6d9a517ab82cb28557fb818",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL003": "098d55e59770c1c45f619fd95abd105ba80c4c600b91b8a8a047eb36c18800c5",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL004": "42575b584ccf03b9b5a9ba86b79a6b355d936dda6fa8e0546eaad3b2c519a225",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL005": "b870347fc292edc00ea3681d1a64e9ff492c821ee516f32c8e2aac8a7b31d7d1",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL006": "8c416cf23a3dbbc3462e53b33423efe7a626e1233179b8c149c0203976a6fa68",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL007": "0cb51cdbd9fe09c98537b8104439cb84305fbb1c0672acd7165b9455708ff247",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL008": "37dd15c370b1c318acfc3743208ac3f80f547a62e808fe5347e19025e405d181",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL009": "a141f9d9df5e4b2d43bce3247139b590e03f34b757774ee63f8164d8e1bd3ff9",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL010": "8a20ee31d42b015481b4dee1e0d3e7d0c3824996ef32457590d281ebbe56c201",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL011": "21d7046f5638abc1629df0453226da627654049be4a51243b9c467667f460cad",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL012": "1662da38b6dd1ff321508f9a0ee09a6e46ccc5f7e1c0e99e5d321104cb2ef2e6",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL013": "8db228d62bd9c89cecd82c8adf48a8eaa7559f7d264adb411612044f19cb7f9a",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL014": "2b162d70b3a730c666c73341eca9409e3e6d8de2f17ab68af01669e7f5d2c50d",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL015": "de782e55a62a3ceceb8ebd2e31045ee1330c9628540fd4fbacfd4d29e9609338",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL016": "451ea2f1c0968e1866e369cc4a3ba73a12fd63017721914409e4cbdadf8fa22d",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL017": "57168c94284e57d1c539353029ac83e6f79eb8a2ab684277b81878294e45c051",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL018": "bd140b931a6cde2a50c0de553bc4ae3eafcf6aa77b4de70d29f4eb2f2be81ab4",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL019": "d3237af41907878a31b9025dafb849503a705fedd90b03e76cab5993488f5271",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL020": "0b0868c7afb1e616fa5bc0fac83e0e6d43ca5e7e39f96864a378f3188bd861da",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL021": "addac74afaa7fea4a252b2c7dc75649e46b979c67b15e4ac41ec0289df59534d",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL022": "e09350c3804b2499604e29dd829a0e0c21a0a68b157368d78d7ad56d1d61cdcb",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL023": "0cf4e0268e5c1c7ddc5f90a401fb0dc665b2acceb27d335aa419c6f2e3c7b0f5",
+    "!LEMMINGS/Lemmings/LemLevels/LEVEL024": "4bdb349abc86387b7962bb626b33e1753a74142903877d1540f4368cdc65a8e0",
+    "!LEMMINGS/Lemmings/LemLevels/LEVELDAT": "a82fadf7ba2fed9937d5a2c6dce3cfc20437343728dc60e6eba22196419cc620",
+    "!LEMMINGS/Lemmings/LemLevels/MUSINFO": "5caa5d922d727e6d30fe25661cd5d9a0cd8db0ba85f870ad3483833eeeafa629",
+    "!LEMMINGS/Lemmings/LemProg": "ec2176262405c0df539bd7529d59f2d03fa91dc82c0382b364328088bd2f0826",
+    "!LEMMINGS/Lemmings/OddTable": "daed819542efd28da266286606504a8713f69e94b1a50cf45ac9edf789872299",
+    "!LEMMINGS/Lemmings/Psygno": "6d314732a9581ca92299409b21df3e872ecd1eadd2d18bfbb74f02a5280710a0",
+    "!LEMMINGS/Lemmings/SampdatP": "49c4da5d6b7dd965671ada5ed31d646cadda1294a05c95b193dada53283931a2",
+    "!LEMMINGS/MemMod": "5c3ad885e5d1abc9cbf7be4e3eb905b460bcdb0ef573b73ff25bc959cd1afe2a",
+    "!LEMMINGS/ToDesk": "73e1cd946571cd56bee7943021a344681aa148bddef63531ee1fb690bf8b6803",
+    "!LEMMINGS/musmod2": "894a868d9284df3aa50ecdbf0af3f499e69f7927f6b6ce2c4cfc7fd159f01dc8"
+   },
+   "game_dirs": [
+    "!LEMMINGS"
+   ]
+  }
+ ],
+ "build": [
+  "python3 -I \"$WEAVE\" extract . INPUTS",
+  "python3 -I tools/unpack_lemboot.py",
+  "make -C recomp regen",
+  "make -C recomp"
+ ],
+ "output": "recomp/lemmings",
+ "requires": {
+  "superspider": "~/stuff/superspider, or $SUPERSPIDER (dune build): analyse, gen, tools/weave.py",
+  "libroger": "~/stuff/libroger, or make ROGER=...",
+  "host": [
+   "python3",
+   "ocaml + dune",
+   "gcc",
+   "SDL3 (pkg-config sdl3)"
+  ]
+ },
+ "run": "cd recomp && ./lemmings"
+}

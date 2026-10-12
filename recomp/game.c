@@ -15,14 +15,14 @@ extern const struct roger_image recomp_image, recompB_image, recompM_image;   /*
 static const char *const prefixes[] = {"<Obey$Dir>.", "<Lem$Dir>.", NULL};
 static const struct roger_program programs[] = {{"LemProg", &recomp_image}, {NULL, NULL}};
 static const struct roger_module modules[] = {
-    {"../extracted/!LEMMINGS/musmod2,fffffa43-00000000", &recompM_image}, {NULL, NULL}};
+    {"../game/!LEMMINGS/musmod2,fffffa43-00000000", &recompM_image}, {NULL, NULL}};
 
 /* LemBoot copies itself from &8000 to &40000 and continues running from
  * there, so that it can load the next asset at &8000 over the low copy (the
  * loop at &8010-&802c). It is translated with --pcbias. */
 static struct roger_relocation relocations[] = {{&recompB_image, 0x8000, 0x40000, 0}, {NULL, 0, 0, 0}};
 
-static const char *boot_path = "../extracted/!LEMMINGS/LemBoot,fffff843-00000000";
+static const char *boot_path = "../game/!LEMMINGS/LemBoot,fffff843-00000000";
 static int want_boot;
 static struct roger_config config;
 
@@ -55,7 +55,7 @@ static struct roger_config config = {
     .programs = programs,
     .relocations = relocations,
     .modules = modules,
-    .appdir = "../extracted/!LEMMINGS",
+    .appdir = "../game/!LEMMINGS",
     .dir_prefixes = prefixes,
     /* !Run selects MODE 12; LemBoot and LemProg then select MODE 9 */
     .initial_mode = 12,
