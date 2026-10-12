@@ -3,21 +3,6 @@ __pycache__/
 *.pyc
 *.swp
 
-# Ghidra database and headless output (regenerate with ghidra/run_ghidra_*.sh)
-ghidra/project/
-ghidra/out/
-ghidra/*.json
-ghidra/*.pickle
-
-# Reassembly products (asm/*/build.sh) - keep the .s source, ignore the
-# rebuilt binary and intermediates
-asm/*/*.o
-asm/*/*.elf
-asm/*/LemProg,*
-asm/*/LemBoot,*
-asm/*.png
-asm/*.log
-
 # Recompilation: generated C (python3 gen_c.py), objects, binary, run outputs
 recomp/gen/
 recomp/genboot/

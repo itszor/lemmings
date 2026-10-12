@@ -74,19 +74,7 @@ roots:
 	python3 $(SS)/tools/gap_roots.py "$(LEMBOOT)" 8000 $(SSD)/lemboot.roots $(LOG)
 	python3 $(SS)/tools/gap_roots.py "$(MUSMOD)" 1800000 $(SSD)/musmod.roots $(LOG)
 
-# The previous analysis: the spider + Ghidra (../ghidra/run_ghidra_*.sh), through
-# the Python gen_c.py.
-regen-ghidra:
-	python3 $(SS)/tools/gen_c.py --img="$(LEMPROG)" --leaders=dispatch \
-	    --json=../ghidra/lemprog.json --tsvdir=../ghidra/out/lemprog
-	python3 $(SS)/tools/gen_c.py --img="$(LEMBOOT)" --leaders=dispatch \
-	    --json=../ghidra/lemboot.json --tsvdir=../ghidra/out/lemboot \
-	    --prefix=B --tabprefix=recompB --pcbias --out=genboot --files=2 --covtag=B
-	python3 $(SS)/tools/gen_c.py --img="$(MUSMOD)" --leaders=dispatch \
-	    --json=../ghidra/musmod.json --tsvdir=../ghidra/out/musmod \
-	    --prefix=M --tabprefix=recompM --base=1800000 --out=genmus --files=2
-
 clean:
 	rm -f gen/*.o genboot/*.o genmus/*.o game.o lemmings lemmings-cov *.cov.o gen*/*.cov.o
 
-.PHONY: FORCE cov regen regen-ghidra roots clean
+.PHONY: FORCE cov regen roots clean

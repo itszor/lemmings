@@ -12,9 +12,10 @@ build.sh runs recipe.json's steps with SuperSpider's tools/weave.py
 extracted/disc and !LEMMINGS to game/ (libroger's appdir; "extracted/"
 below), runs LemBoot's unpacker (tools/unpack_lemboot.py ->
 extracted_decompressed/), then make regen (SuperSpider) and make. Needs
-python3, OCaml/dune, gcc and SDL3. The disassemblies (asm/*/*.s) and the
-splash screen previews (docs/*.png) the notes below mention are no longer
-in the repository either (they're in its history).
+python3, OCaml/dune, gcc and SDL3. The disassemblies (asm/*/*.s), the
+splash screen previews (docs/*.png) and the spider + Ghidra analysis
+(ghidra/, replaced by SuperSpider) the notes below mention are no longer
+in the repository either.
 
 Disc images
 -----------
@@ -127,37 +128,6 @@ extracted_decompressed/ Decompressed game files, built by tools/unpack_*.py.
                                                palette recovered yet - previews
                                                are rendered as grayscale
                                                (nibble value x17).
-
-ghidra/                  Carried over from galactic dan and confirmed
-                          working on real code:
-                            spider.py         recursive-descent + speculative
-                                               code finder. One fix on top of
-                                               galactic dan's version - see
-                                               "Fixing spider's false negative"
-                                               below.
-                            export_ghidra.py  spider -> json (unmodified)
-                            gen_asm.py        json -> relocatable GNU as
-                                               (unmodified, not yet run here)
-                            run_ghidra_lemboot.sh / run_ghidra_lemprog.sh
-                                              import LemBoot / LemProg.bin
-                                              into Ghidra at &8000, apply the
-                                              spider's classification,
-                                              decompile.
-                                              `GHIDRA=/path ./run_ghidra_lemprog.sh`
-                                              (defaults to the same
-                                              ghidra_12.1.3_PUBLIC install
-                                              galactic dan uses). Output
-                                              goes to out/lemboot/ and
-                                              out/lemprog/ (galdan.c/
-                                              functions.tsv - filenames are
-                                              hardcoded by
-                                              RiscOSPostAnalysis.java).
-                          LemBoot: 28 functions decompiled, spider/ghidra
-                          agree on 2020/2072 code bytes.
-                          LemProg.bin: 199 functions decompiled (up from an
-                          initial 149 before the spider fix below), overall
-                          code coverage 12.0% -> 19.6% of the image, ghidra/
-                          spider agree on 25492/28804 code bytes.
 
 asm/, recomp/            Empty so far - this is where galactic dan's
                           reassembler and SDL3 static recompiler live; not
