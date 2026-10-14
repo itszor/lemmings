@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.join(os.environ.get('SUPERSPIDER', os.path.expanduser
 import arm2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LEMBOOT = os.path.join(HERE, '..', 'game', '!LEMMINGS', 'LemBoot,fffff843-00000000')
+LEMBOOT = os.path.join(HERE, '..', 'game', '!LEMMINGS', 'LemBoot,fffff843-5e629b4c')
 ROOT = os.path.join(HERE, '..', 'game', '!LEMMINGS')       # (recipe.json)
 OUT_DIR = os.path.join(HERE, '..', 'extracted_decompressed')
 RELOC = 0x40000
