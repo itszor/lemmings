@@ -8,7 +8,7 @@ GEN     := $(wildcard gen/code*.c) gen/entries.c
 GENBOOT := $(wildcard genboot/code*.c) genboot/entries.c
 GENMUS  := $(wildcard genmus/code*.c) genmus/entries.c
 OBJ     := $(GEN:.c=.o) $(GENBOOT:.c=.o) $(GENMUS:.c=.o) game.o
-LIBS    := $(shell pkg-config --libs sdl3) -lm -lpthread
+LIBS    := $(shell pkg-config --libs sdl3) -ljpeg -lm -lpthread
 INC     := -I$(ROGER)/include
 
 lemmings: $(OBJ) $(ROGER)/libroger.a
